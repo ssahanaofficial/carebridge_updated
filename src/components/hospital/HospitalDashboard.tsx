@@ -20,7 +20,6 @@ import {
 import { useAuth } from '../../context/AuthContext';
 import { dataStore, respondToRequestInFirestore, subscribeRequestsForProviderFromFirestore } from '../../services/dataService';
 import { ProviderRequestsPanel } from '../common/ProviderRequestsPanel';
-import { FeedbackForm } from '../common/FeedbackForm';
 import type { HospitalProfile, ResourceRequest } from '../../types';
 
 export const HospitalDashboard: React.FC = () => {
@@ -468,17 +467,6 @@ export const HospitalDashboard: React.FC = () => {
               </div>
             )}
           </div>
-        </div>
-
-        {/* Hospital Operations Feedback Section */}
-        <div className="pt-6">
-          <FeedbackForm
-            role="hospital"
-            roleLabel="Hospital Facility"
-            facilityName={profile?.hospitalName}
-            title="Hospital Operations & Triage Feedback"
-            description="Help CareBridge coordinators optimize emergency bed allocation, triage telemetry, and facility workflows."
-          />
         </div>
       </div>
     </div>

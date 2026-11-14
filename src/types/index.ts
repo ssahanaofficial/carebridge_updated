@@ -75,7 +75,6 @@ export type EmergencyCategory =
 
 export type CaseStatus =
   | 'Submitted'
-  | 'Active'
   | 'Under Review'
   | 'Accepted'
   | 'Rejected'

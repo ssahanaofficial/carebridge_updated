@@ -15,9 +15,6 @@ import { OxygenDashboard } from './components/oxygen/OxygenDashboard';
 import { AmbulanceDashboard } from './components/ambulance/AmbulanceDashboard';
 import { DoctorDashboard } from './components/doctor/DoctorDashboard';
 import { AdminDashboard } from './components/admin/AdminDashboard';
-import { PatientTutorialModal } from './components/tutorial/PatientTutorialModal';
-import { HelpSection } from './components/help/HelpSection';
-import { FeedbackForm } from './components/common/FeedbackForm';
 import {
   dataStore,
   type ResourceRequestDraft,
@@ -33,7 +30,6 @@ import {
   subscribeCasesForAttendantFromFirestore
 } from './services/dataService';
 import type {
-  UserRole,
   PatientLink,
   ResourceRequest as DataResourceRequest,
   EmergencyCategory,
@@ -80,10 +76,7 @@ import {
   Stethoscope,
   Droplet,
   Wind,
-  Navigation,
-  Play,
-  HelpCircle,
-  Sparkles
+  Navigation
 } from 'lucide-react';
 
 // ==========================================
@@ -321,13 +314,13 @@ export interface ResourceStatusItem {
 
 export interface EmergencyCase {
   caseId: string;
-  patientUid: string;
+  patientUid?: string;
   patientId?: string;
   requesterUid?: string;
-  requesterRole?: UserRole;
+  requesterRole?: string;
   createdBy?: 'patient' | 'attendant';
   attendantUid?: string;
-  status: CaseStatus;
+  status: 'Active' | 'Dispatched' | 'Under Review' | 'Completed' | 'Submitted' | 'Accepted' | 'Rejected' | 'In Progress' | 'Cancelled' | 'REQUESTED' | string;
   createdAt: string;
   dateStr: string;
   patientName: string;
@@ -339,7 +332,7 @@ export interface EmergencyCase {
   conditionSummary?: string;
   urgencyLevel?: 'immediate' | 'emergency' | 'urgent' | 'semi-urgent';
   priority?: 'Critical' | 'High' | 'Medium' | 'Low';
-  category?: EmergencyCategory;
+  category?: string;
   requiredServices?: string[];
   resourcesNeeded?: string[];
   attendantName: string;
@@ -370,33 +363,11 @@ const normalizeTriagePriority = (priority?: string): EmergencyCase['triagePriori
   }
 };
 
-const getCasesStorageKey = (uid: string) => `carebridge_cases_list_${uid}`;
-
-const isCaseAuthorizedForUser = (
-  c: any,
-  userUid?: string | null,
-  linkedUids: string[] = []
-): boolean => {
-  if (!userUid || !c) return false;
-  if (c.attendantUid === userUid) return true;
-  if (c.attendant && c.attendant.uid === userUid) return true;
-  if (c.patientUid === userUid) return true;
-  if (c.patientId === userUid) return true;
-  if (c.requesterUid === userUid) return true;
-  if (c.patientUid && linkedUids.includes(c.patientUid)) return true;
-  if (c.patientId && linkedUids.includes(c.patientId)) return true;
-  return false;
-};
-
 function CareBridgeApp() {
   const { currentUser, activeRole, loading, logout } = useAuth();
 
   // Navigation: 'landing' | 'login' | 'signup' | 'forgot' | 'selection' | 'case-details' | 'case-confirmation' | 'dashboard'
   const [currentScreen, setCurrentScreen] = useState<'landing' | 'login' | 'signup' | 'forgot' | 'selection' | 'case-details' | 'case-confirmation' | 'dashboard'>('landing');
-
-  // Multi-user Help & Patient Video Tutorial Modals
-  const [isPatientTutorialOpen, setIsPatientTutorialOpen] = useState(false);
-  const [isHelpModalOpen, setIsHelpModalOpen] = useState(false);
 
   // Returning user session restoration:
   useEffect(() => {
@@ -441,7 +412,7 @@ function CareBridgeApp() {
     try {
       const saved = localStorage.getItem('carebridge_location');
       if (saved) return saved;
-    } catch (e) { }
+    } catch (e) {}
     return 'Hubballi, Karnataka, India';
   });
 
@@ -449,7 +420,7 @@ function CareBridgeApp() {
     try {
       const saved = localStorage.getItem('carebridge_provider_id');
       if (saved) return saved;
-    } catch (e) { }
+    } catch (e) {}
     return 'prov-01';
   });
 
@@ -459,7 +430,7 @@ function CareBridgeApp() {
       const updated = { ...prev, [key]: !prev[key] };
       try {
         localStorage.setItem('carebridge_selected_resources', JSON.stringify(updated));
-      } catch (e) { }
+      } catch (e) {}
       return updated;
     });
   };
@@ -468,14 +439,14 @@ function CareBridgeApp() {
     setSelectedProviderId(id);
     try {
       localStorage.setItem('carebridge_provider_id', id);
-    } catch (e) { }
+    } catch (e) {}
   };
 
   const handleUpdateLocation = (loc: string) => {
     setSearchLocation(loc);
     try {
       localStorage.setItem('carebridge_location', loc);
-    } catch (e) { }
+    } catch (e) {}
   };
 
   // Screen C (Emergency Case Details) Form State
@@ -538,16 +509,10 @@ function CareBridgeApp() {
   // Resource requests associated with active cases
   const [requestsList, setRequestsList] = useState<DataResourceRequest[]>([]);
 
-  // Multi-case list for Patient/Attendant Emergency Dashboard (Strictly user-scoped)
+  // Multi-case list for Patient/Attendant Emergency Dashboard
+  // NOTE: Initialized to empty array so real authenticated users (like Sahana S.)
+  // never see hardcoded demo cases from other users.
   const [casesList, setCasesList] = useState<EmergencyCase[]>([]);
-
-  // One-time cleanup of legacy un-scoped storage keys
-  useEffect(() => {
-    try {
-      localStorage.removeItem('carebridge_cases_list');
-      localStorage.removeItem('carebridge_active_case');
-    } catch (e) { }
-  }, []);
 
   // Dashboard Tab State: 'cases' | 'track' | 'patients' | 'notifications' | 'history' | 'profile'
   const [dashboardTab, setDashboardTab] = useState<'cases' | 'track' | 'patients' | 'notifications' | 'history' | 'profile'>('cases');
@@ -567,35 +532,10 @@ function CareBridgeApp() {
       setCasesList([]);
       setLinkedPatients([]);
       setRequestsList([]);
-      setSelectedDashboardCase(null);
-      setSubmittedCase(null);
       return;
     }
 
     let isMounted = true;
-    const userStorageKey = getCasesStorageKey(currentUser.uid);
-
-    // Hydrate cached cases strictly belonging to this authenticated user
-    try {
-      localStorage.removeItem('carebridge_cases_list');
-      localStorage.removeItem('carebridge_active_case');
-      const cached = localStorage.getItem(userStorageKey);
-      if (cached) {
-        const parsed = JSON.parse(cached);
-        if (Array.isArray(parsed)) {
-          const userOnly = parsed.filter((c: EmergencyCase) =>
-            isCaseAuthorizedForUser(c, currentUser.uid, [])
-          );
-          setCasesList(userOnly);
-        } else {
-          setCasesList([]);
-        }
-      } else {
-        setCasesList([]);
-      }
-    } catch (e) {
-      setCasesList([]);
-    }
 
     // Populate default attendant details from authenticated user
     setAttendantName(currentUser.displayName || '');
@@ -639,96 +579,49 @@ function CareBridgeApp() {
         const authorizedCases = await fetchCasesForAttendantFromFirestore(currentUser.uid, linkedPatientUids);
         if (!isMounted) return;
 
-        // Retrieve user-scoped local cases and strictly filter
-        let localCachedCases: EmergencyCase[] = [];
-        try {
-          const cachedStr = localStorage.getItem(userStorageKey);
-          if (cachedStr) {
-            const parsed = JSON.parse(cachedStr);
-            if (Array.isArray(parsed)) {
-              localCachedCases = parsed.filter((c: EmergencyCase) =>
-                isCaseAuthorizedForUser(c, currentUser.uid, linkedPatientUids)
-              );
-            }
-          }
-        } catch (e) { }
+        // Map to EmergencyCase view objects
+        const formatted: EmergencyCase[] = authorizedCases.map((c) => ({
+          ...c,
+          caseId: c.caseId,
+          patientUid: c.patientUid || c.patientId || currentUser.uid,
+          status: (c.status === 'resolved' || c.status === 'cancelled' ? 'Completed' : 'Active') as any,
+          createdAt: new Date(c.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          dateStr: new Date(c.createdAt).toLocaleDateString(),
+          patientName: c.patientName,
+          patientAge: String(c.patientAge || 0),
+          patientGender: c.patientGender || 'Unknown',
+          patientBloodGroup: c.patientBloodGroup || 'Unknown',
+          patientCondition: c.conditionSummary || c.patientCondition || 'Emergency Medical Request',
+          conditionSummary: c.conditionSummary || c.patientCondition || 'Emergency Medical Request',
+          location: c.location || { address: c.incidentAddress || 'Hubballi', city: 'Hubballi' },
+          resourcesNeeded: c.resourcesNeeded || [],
+          attendantName: c.attendant?.name || currentUser.displayName || 'Sahana S.',
+          attendantRelation: c.attendant?.relation || 'Attendant',
+          attendantPhone: c.attendant?.phone || currentUser.phone || '',
+          incidentAddress: c.location?.address || c.incidentAddress || 'Hubballi',
+          triagePriority: normalizeTriagePriority(c.urgencyLevel || c.triagePriority),
+          emergencyDescription: c.conditionSummary || c.emergencyDescription || 'Emergency Medical Request',
+          providerName: 'CareBridge Emergency Network',
+          providerDetails: 'Verified Emergency Response Network',
+          providerRating: '4.9 Stars',
+          resourcesList: (c.resourcesNeeded || []).map((r) =>
+            r === 'bed'
+              ? 'Hospital Beds'
+              : r === 'icu'
+              ? 'ICU Facilities'
+              : r === 'blood'
+              ? 'Blood'
+              : r === 'oxygen'
+              ? 'Oxygen'
+              : 'Ambulance Services'
+          ),
+          individualStatuses: []
+        }));
 
-        const allCasesMap = new Map<string, EmergencyCase>();
-        localCachedCases.forEach((c) => allCasesMap.set(c.caseId, c));
-
-        // Map to EmergencyCase view objects safely, strictly filtering
-        const formatted: EmergencyCase[] = authorizedCases
-          .filter((c) => isCaseAuthorizedForUser(c, currentUser.uid, linkedPatientUids))
-          .map((c) => {
-            let timeDisplay = c.createdAt || 'Just now';
-            let dateDisplay = c.dateStr || new Date().toLocaleDateString();
-            try {
-              if (c.createdAt) {
-                const d = new Date(c.createdAt);
-                if (!isNaN(d.getTime())) {
-                  timeDisplay = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                  dateDisplay = d.toLocaleDateString();
-                }
-              }
-            } catch (e) { }
-
-            return {
-              ...c,
-              caseId: c.caseId,
-              patientUid: c.patientUid || c.patientId || currentUser.uid,
-              status: (c.status === 'resolved' || c.status === 'cancelled' ? 'Completed' : 'Active') as any,
-              createdAt: timeDisplay,
-              dateStr: dateDisplay,
-              patientName: c.patientName,
-              patientAge: String(c.patientAge || 0),
-              patientGender: c.patientGender || 'Unknown',
-              patientBloodGroup: c.patientBloodGroup || 'Unknown',
-              patientCondition: c.conditionSummary || c.patientCondition || 'Emergency Medical Request',
-              conditionSummary: c.conditionSummary || c.patientCondition || 'Emergency Medical Request',
-              location: c.location || { address: c.incidentAddress || 'Hubballi', city: 'Hubballi' },
-              resourcesNeeded: c.resourcesNeeded || [],
-              attendantName: c.attendant?.name || currentUser.displayName || c.patientName || 'Patient Attendant',
-              attendantRelation: c.attendant?.relation || 'Attendant',
-              attendantPhone: c.attendant?.phone || currentUser.phone || '',
-              incidentAddress: c.location?.address || c.incidentAddress || 'Hubballi',
-              triagePriority: normalizeTriagePriority(c.urgencyLevel || c.triagePriority),
-              emergencyDescription: c.conditionSummary || c.emergencyDescription || 'Emergency Medical Request',
-              providerName: c.matchedHospitalName || 'CareBridge Emergency Network',
-              providerDetails: 'Verified Emergency Response Network',
-              providerRating: '4.9 Stars',
-              resourcesList: (c.resourcesNeeded || []).map((r) =>
-                r === 'bed'
-                  ? 'Hospital Beds'
-                  : r === 'icu'
-                    ? 'ICU Facilities'
-                    : r === 'blood'
-                      ? 'Blood'
-                      : r === 'oxygen'
-                        ? 'Oxygen'
-                        : 'Ambulance Services'
-              ),
-              individualStatuses: (c.individualStatuses || []).map((s: any) => ({
-                resource: s.resource || s.serviceName || 'Healthcare Resource',
-                status: s.status || 'Active',
-                code: s.code || (['completed', 'Completed'].includes(s.status) ? 'completed' : ['accepted', 'reserved'].includes(s.status) ? 'reserved' : 'pending'),
-                detail: s.detail || 'Processing request',
-                updatedAt: s.updatedAt || 'Just now'
-              }))
-            };
-          });
-
-        formatted.forEach((c) => allCasesMap.set(c.caseId, c));
-        const mergedCases = Array.from(allCasesMap.values()).filter((c) =>
-          isCaseAuthorizedForUser(c, currentUser.uid, linkedPatientUids)
-        );
-        setCasesList(mergedCases);
-        try {
-          localStorage.setItem(userStorageKey, JSON.stringify(mergedCases));
-          localStorage.removeItem('carebridge_cases_list');
-        } catch (e) { }
+        setCasesList(formatted);
 
         // 3. Fetch resource requests for these authorized cases
-        const caseIds = mergedCases.map((c) => c.caseId);
+        const caseIds = authorizedCases.map((c) => c.caseId);
         const reqs = await fetchRequestsForCasesFromFirestore(caseIds);
         if (!isMounted) return;
         setRequestsList(reqs);
@@ -748,29 +641,14 @@ function CareBridgeApp() {
     // Set up real-time Firestore onSnapshot listener for emergency cases
     const unsubCases = subscribeCasesForAttendantFromFirestore(currentUser.uid, [], (cases) => {
       if (!isMounted) return;
-      const validCases = (cases || []).filter((c) =>
-        isCaseAuthorizedForUser(c, currentUser.uid, linkedPatients.map((l) => l.patientUid))
-      );
-      const formatted: EmergencyCase[] = validCases.map((c) => {
-        let timeDisplay = c.createdAt || 'Just now';
-        let dateDisplay = c.dateStr || new Date().toLocaleDateString();
-        try {
-          if (c.createdAt) {
-            const d = new Date(c.createdAt);
-            if (!isNaN(d.getTime())) {
-              timeDisplay = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-              dateDisplay = d.toLocaleDateString();
-            }
-          }
-        } catch (e) { }
-
-        return {
+      if (cases.length > 0) {
+        const formatted: EmergencyCase[] = cases.map((c) => ({
           ...c,
           caseId: c.caseId,
           patientUid: c.patientUid || c.patientId || currentUser.uid,
           status: (c.status === 'resolved' || c.status === 'cancelled' ? 'Completed' : 'Active') as any,
-          createdAt: timeDisplay,
-          dateStr: dateDisplay,
+          createdAt: new Date(c.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          dateStr: new Date(c.createdAt).toLocaleDateString(),
           patientName: c.patientName,
           patientAge: String(c.patientAge || 0),
           patientGender: c.patientGender || 'Unknown',
@@ -779,48 +657,30 @@ function CareBridgeApp() {
           conditionSummary: c.conditionSummary || c.patientCondition || 'Emergency Medical Request',
           location: c.location || { address: c.incidentAddress || 'Hubballi', city: 'Hubballi' },
           resourcesNeeded: c.resourcesNeeded || [],
-          attendantName: c.attendant?.name || currentUser.displayName || c.patientName || 'Patient Attendant',
+          attendantName: c.attendant?.name || currentUser.displayName || 'Sahana S.',
           attendantRelation: c.attendant?.relation || 'Attendant',
           attendantPhone: c.attendant?.phone || currentUser.phone || '',
           incidentAddress: c.location?.address || c.incidentAddress || 'Hubballi',
           triagePriority: normalizeTriagePriority(c.urgencyLevel || c.triagePriority),
           emergencyDescription: c.conditionSummary || c.emergencyDescription || 'Emergency Medical Request',
-          providerName: c.matchedHospitalName || 'CareBridge Emergency Network',
+          providerName: 'CareBridge Emergency Network',
           providerDetails: 'Verified Emergency Response Network',
           providerRating: '4.9 Stars',
           resourcesList: (c.resourcesNeeded || []).map((r) =>
             r === 'bed'
               ? 'Hospital Beds'
               : r === 'icu'
-                ? 'ICU Facilities'
-                : r === 'blood'
-                  ? 'Blood'
-                  : r === 'oxygen'
-                    ? 'Oxygen'
-                    : 'Ambulance Services'
+              ? 'ICU Facilities'
+              : r === 'blood'
+              ? 'Blood'
+              : r === 'oxygen'
+              ? 'Oxygen'
+              : 'Ambulance Services'
           ),
-          individualStatuses: (c.individualStatuses || []).map((s: any) => ({
-            resource: s.resource || s.serviceName || 'Healthcare Resource',
-            status: s.status || 'Active',
-            code: s.code || (['completed', 'Completed'].includes(s.status) ? 'completed' : ['accepted', 'reserved'].includes(s.status) ? 'reserved' : 'pending'),
-            detail: s.detail || 'Processing request',
-            updatedAt: s.updatedAt || 'Just now'
-          }))
-        };
-      });
-
-      setCasesList((prev) => {
-        const map = new Map<string, EmergencyCase>();
-        prev
-          .filter((c) => isCaseAuthorizedForUser(c, currentUser.uid, linkedPatients.map((l) => l.patientUid)))
-          .forEach((c) => map.set(c.caseId, c));
-        formatted.forEach((c) => map.set(c.caseId, c));
-        const updated = Array.from(map.values());
-        try {
-          localStorage.setItem(userStorageKey, JSON.stringify(updated));
-        } catch (e) { }
-        return updated;
-      });
+          individualStatuses: []
+        }));
+        setCasesList(formatted);
+      }
     });
 
     return () => {
@@ -980,7 +840,6 @@ function CareBridgeApp() {
     if (!patientCondition.trim()) {
       errors.patientCondition = 'Primary condition or complaint is required';
     }
-
     let assignedPatientUid = '';
     if (isPatientSelf) {
       assignedPatientUid = currentUser.uid;
@@ -988,32 +847,40 @@ function CareBridgeApp() {
       const activeLinked = linkedPatients.find(
         (link) => link.id === selectedLinkedPatientId || link.patientUid === patientId.trim()
       );
-      if (activeLinked) {
-        assignedPatientUid = activeLinked.patientUid;
+      if (!activeLinked) {
+        errors.authorization = 'Select a patient linked to your attendant account.';
+      } else if (!activeLinked.consentGranted || activeLinked.consentStatus !== 'granted') {
+        errors.consent = 'Active patient consent is required before submitting this emergency case.';
       } else {
-        assignedPatientUid = patientId.trim() || `pt-${Date.now().toString().slice(-6)}`;
+        assignedPatientUid = activeLinked.patientUid;
       }
-    } else if (currentUser) {
-      // Healthcare provider or administrator testing/dispatching
-      assignedPatientUid = patientId.trim() || currentUser.uid;
     } else {
-      assignedPatientUid = `guest-${Date.now().toString().slice(-6)}`;
+      errors.authorization = 'Sign in with a patient or authorized attendant account to submit an emergency case.';
     }
 
-    // 2. Contact Details & Attendant synchronization
-    const effectiveContactPerson = contactPerson.trim() || attendantName.trim() || patientName.trim() || currentUser?.displayName || 'Emergency Contact';
-    const rawContactPhone = contactPhone.trim() || attendantPhone.trim() || currentUser?.phone || '';
-    const normalizedContactPhone = rawContactPhone.replace(/[\s().-]/g, '');
-
-    const finalAttendantName = attendantName.trim() || effectiveContactPerson;
-    const finalAttendantPhone = (attendantPhone.trim() ? attendantPhone.trim().replace(/[\s().-]/g, '') : normalizedContactPhone) || '9845198765';
-    const finalAttendantRelation = attendantRelation.trim() || (isPatientSelf ? 'Self' : 'Attendant');
-
-    if (!effectiveContactPerson) {
-      errors.contactPerson = 'Contact person name is required';
+    if (!attendantName.trim()) {
+      errors.attendantName = 'Attendant full name is required';
     }
-    if (!rawContactPhone || !/^\+?[0-9]{7,15}$/.test(normalizedContactPhone)) {
-      errors.contactPhone = 'Please enter a valid emergency contact phone number (e.g. +91 98451 98765)';
+    const normalizedAttendantPhone = attendantPhone.trim().replace(/[\s().-]/g, '');
+    if (!/^\+?[1-9]\d{7,14}$/.test(normalizedAttendantPhone)) {
+      errors.attendantPhone = 'Please enter a valid contact phone number';
+    }
+    if (!attendantRelation.trim()) {
+      errors.attendantRelation = 'Please select the attendant relationship';
+    }
+    if (
+      isPatientSelf && attendantRelation !== 'Self' &&
+      attendantConsentFingerprint !== getAttendantConsentFingerprint()
+    ) {
+      errors.attendantConsent = 'Confirm that the patient has consented to this submission';
+    }
+    if (!incidentAddress.trim()) {
+      errors.incidentAddress = 'Incident address / landmark is required';
+    }
+
+    // 2. Emergency Information
+    if (!emergencyDescription.trim()) {
+      errors.emergencyDescription = 'Please describe the emergency condition';
     }
 
     // 3. Location
@@ -1021,9 +888,15 @@ function CareBridgeApp() {
       errors.incidentAddress = 'Emergency incident address / landmark is required';
     }
 
-    // 4. Emergency Information
-    if (!emergencyDescription.trim()) {
-      errors.emergencyDescription = 'Please describe the emergency condition or chief complaint';
+    // 4. Contact Details
+    const effectiveContactPerson = contactPerson.trim() || attendantName.trim() || patientName.trim();
+    const effectiveContactPhone = contactPhone.trim() || attendantPhone.trim() || currentUser?.phone || '';
+    const normalizedContactPhone = effectiveContactPhone.replace(/[\s().-]/g, '');
+    if (!effectiveContactPerson) {
+      errors.contactPerson = 'Contact person name is required';
+    }
+    if (!/^\+?[1-9]\d{7,14}$/.test(normalizedContactPhone)) {
+      errors.contactPhone = 'Please enter a valid emergency contact phone number';
     }
 
     // 5. Active Resources / Services
@@ -1168,23 +1041,23 @@ function CareBridgeApp() {
 
       const newCaseData: EmergencyCase = {
         caseId: newCaseId,
-        patientUid: assignedPatientUid || currentUser.uid,
+        patientUid: assignedPatientUid,
         patientId: assignedPatientUid,
         requesterUid,
         requesterRole,
         createdBy: isAttendantRole ? 'attendant' : 'patient',
         attendantUid: isAttendantRole ? requesterUid : undefined,
-        status: 'Active',
-        createdAt: now.toISOString(),
+        status: 'Submitted',
+        createdAt: nowTime,
         dateStr: nowDateStr,
         patientName: patientName.trim(),
         patientAge: patientAge.trim(),
         patientGender,
         patientBloodGroup,
         patientCondition: patientCondition.trim(),
-        attendantName: finalAttendantName,
-        attendantRelation: finalAttendantRelation,
-        attendantPhone: finalAttendantPhone,
+        attendantName: attendantName.trim(),
+        attendantRelation,
+        attendantPhone: normalizedAttendantPhone,
         incidentAddress: incidentAddress.trim(),
         triagePriority,
         emergencyDescription: emergencyDescription.trim(),
@@ -1250,7 +1123,7 @@ function CareBridgeApp() {
       const emergencyCase: EmergencyCaseRecord = {
         caseId: newCaseId,
         submissionFingerprint,
-        patientUid: assignedPatientUid || currentUser.uid,
+        patientUid: assignedPatientUid,
         requesterUid,
         requesterRole,
         ...(isAttendantRole ? { attendantUid: requesterUid } : {}),
@@ -1271,9 +1144,9 @@ function CareBridgeApp() {
         },
         attendant: {
           uid: isAttendantRole ? requesterUid : undefined,
-          name: finalAttendantName,
-          relation: finalAttendantRelation,
-          phone: finalAttendantPhone
+          name: attendantName.trim(),
+          relation: attendantRelation,
+          phone: normalizedAttendantPhone
         },
         ...(isAttendantRole ? {
           createdBy: 'attendant',
@@ -1296,48 +1169,11 @@ function CareBridgeApp() {
         updatedAt: now.toISOString()
       };
 
-      let hospitalName = 'St. Luke\'s Medical Center';
-      let alreadySubmitted = false;
-
-      try {
-        const result = await dataStore.createEmergencySubmission(
-          emergencyCase,
-          requestDrafts,
-          requestCity
-        );
-        hospitalName = result.hospitalName;
-        alreadySubmitted = result.alreadySubmitted;
-      } catch (firestoreError: any) {
-        console.warn('[CareBridge App] Cloud Firestore submission note (using local store fallback):', firestoreError);
-        // If Cloud Firestore security rules reject (e.g. attendant role or unverified remote directory),
-        // seamlessly save to CareBridge verified local emergency store so triage is never blocked
-        try {
-          dataStore.createCase({
-            ...emergencyCase,
-            matchedHospitalName: hospitalName,
-            requestCount: requestDrafts.length
-          });
-          requestDrafts.forEach((draft) => {
-            dataStore.createRequest({
-              requestId: `REQ-${emergencyCase.caseId}-${draft.resourceType}`,
-              caseId: emergencyCase.caseId,
-              patientUid: emergencyCase.patientUid,
-              requesterUid,
-              patientName: emergencyCase.patientName,
-              providerUid: 'hosp-demo-01',
-              providerName: hospitalName,
-              resourceType: draft.resourceType,
-              details: draft.details,
-              status: 'REQUESTED',
-              createdAt: now.toISOString(),
-              updatedAt: now.toISOString()
-            });
-          });
-        } catch (localStoreErr) {
-          console.warn('[CareBridge App] Local store backup write:', localStoreErr);
-        }
-      }
-
+      const { hospitalName, alreadySubmitted } = await dataStore.createEmergencySubmission(
+        emergencyCase,
+        requestDrafts,
+        requestCity
+      );
       newCaseData.providerName = hospitalName;
       newCaseData.providerDetails = 'Emergency provider matched from the active directory';
       newCaseData.providerRating = 'Verified provider';
@@ -1348,24 +1184,17 @@ function CareBridgeApp() {
           : 'Emergency case submitted successfully.'
       );
       setSubmittedCase(newCaseData);
-      dataStore.createCase(newCaseData);
       setCasesList((prev) => {
         const updated = [newCaseData, ...prev.filter((c) => c.caseId !== newCaseData.caseId)];
         try {
-          if (currentUser?.uid) {
-            localStorage.setItem(getCasesStorageKey(currentUser.uid), JSON.stringify(updated));
-          }
-          localStorage.removeItem('carebridge_cases_list');
+          localStorage.setItem('carebridge_cases_list', JSON.stringify(updated));
         } catch (storageError) {
           console.warn('Could not cache submitted case locally:', storageError);
         }
         return updated;
       });
       try {
-        if (currentUser?.uid) {
-          localStorage.setItem(`carebridge_active_case_${currentUser.uid}`, JSON.stringify(newCaseData));
-        }
-        localStorage.removeItem('carebridge_active_case');
+        localStorage.setItem('carebridge_active_case', JSON.stringify(newCaseData));
       } catch (storageError) {
         console.warn('Could not cache active case locally:', storageError);
       }
@@ -1464,9 +1293,9 @@ function CareBridgeApp() {
       const linkId = `${currentUser?.uid || 'att'}_${pUid}`;
       const newLink: PatientLink = {
         id: linkId,
-        attendantUid: currentUser?.uid || '',
-        attendantName: currentUser?.displayName || currentUser?.email?.split('@')[0] || 'CareBridge Attendant',
-        attendantEmail: currentUser?.email || '',
+        attendantUid: currentUser?.uid || 'patient-demo-01',
+        attendantName: currentUser?.displayName || 'Sahana S.',
+        attendantEmail: currentUser?.email || 'sahana2006@gmail.com',
         patientUid: pUid,
         patientName: newPatientName.trim(),
         relationship: newPatientRelation.trim(),
@@ -1556,7 +1385,6 @@ function CareBridgeApp() {
     };
     setSelectedDashboardCase({
       caseId: record.caseId,
-      patientUid: record.patientUid || '',
       status,
       createdAt: createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       dateStr: createdAt.toLocaleDateString(),
@@ -1592,48 +1420,36 @@ function CareBridgeApp() {
       {/* Global CareBridge Official Header & Notification Telemetry */}
       <Header
         onNavigateLanding={() => setCurrentScreen('landing')}
-        onNavigateDashboard={() => setCurrentScreen('dashboard')}
         onOpenLogin={() => setCurrentScreen('login')}
         onOpenSignup={() => setCurrentScreen('signup')}
-        onOpenHelp={() => setIsHelpModalOpen(true)}
-        onOpenPatientTutorial={() => setIsPatientTutorialOpen(true)}
       />
 
-      {/* Role Navigation Bar (Visible When Authenticated As Any Healthcare Provider / Admin) */}
-      {currentUser && ['hospital', 'bloodBank', 'oxygenProvider', 'ambulanceProvider', 'doctor', 'admin'].includes(currentUser.role) && (
-        <div className="bg-[#0b2849] text-white text-xs px-4 py-1.5 flex flex-wrap items-center justify-between gap-2 border-b border-blue-950 z-30 font-sans shadow-xs">
+      {/* Administrative Inspection Bar (Visible Only When Authenticated As Coordinator/Admin) */}
+      {currentUser?.role === 'admin' && (
+        <div className="bg-[#0b2849] text-white text-xs px-4 py-1.5 flex flex-wrap items-center justify-between gap-2 border-b border-blue-950 z-30 font-sans">
           <div className="flex items-center gap-2">
-            <span className="font-bold uppercase tracking-wider text-[10px] bg-teal-600 px-2 py-0.5 rounded text-white font-mono">
-              Provider Mode: {currentUser.role}
-            </span>
-            <span className="text-slate-300 hidden sm:inline text-[11px]">
-              {currentUser.displayName} • {currentUser.email}
+            <span className="font-bold uppercase tracking-wider text-[10px] bg-purple-600 px-2 py-0.5 rounded text-white font-mono">
+              Central Coordinator Oversight
             </span>
           </div>
 
           <div className="flex items-center gap-2 font-medium text-xs">
             <button
-              onClick={() => setCurrentScreen('dashboard')}
-              className={`px-2.5 py-0.5 rounded transition-colors ${currentScreen === 'dashboard' ? 'bg-teal-400 text-slate-900 font-bold' : 'text-slate-300 hover:text-white'
-                }`}
-            >
-              My Dashboard
-            </button>
-            <span className="text-slate-500">/</span>
-            <button
               onClick={() => setCurrentScreen('landing')}
-              className={`px-2 py-0.5 rounded transition-colors ${currentScreen === 'landing' ? 'bg-teal-400 text-slate-900 font-bold' : 'text-slate-300 hover:text-white'
-                }`}
+              className={`px-2 py-0.5 rounded transition-colors ${
+                currentScreen === 'landing' ? 'bg-teal-400 text-slate-900 font-bold' : 'text-slate-300 hover:text-white'
+              }`}
             >
-              Home
+              Public Portal
             </button>
-            <span className="text-slate-500">/</span>
+            <span className="text-slate-400">/</span>
             <button
-              onClick={() => setCurrentScreen('selection')}
-              className={`px-2 py-0.5 rounded transition-colors ${currentScreen === 'selection' || currentScreen === 'case-details' ? 'bg-teal-400 text-slate-900 font-bold' : 'text-slate-300 hover:text-white'
-                }`}
+              onClick={() => setCurrentScreen('dashboard')}
+              className={`px-2 py-0.5 rounded transition-colors ${
+                currentScreen === 'dashboard' ? 'bg-teal-400 text-slate-900 font-bold' : 'text-slate-300 hover:text-white'
+              }`}
             >
-              Emergency Requisition
+              Admin Dashboard
             </button>
           </div>
         </div>
@@ -1645,22 +1461,12 @@ function CareBridgeApp() {
           onStartEmergency={() => {
             if (!currentUser) {
               setCurrentScreen('login');
-            } else if (currentUser.role !== 'patient' && currentUser.role !== 'patientAttendant') {
-              setCurrentScreen('dashboard');
             } else {
               setCurrentScreen('selection');
             }
           }}
-          onOpenProviderDashboard={() => {
-            if (currentUser && currentUser.role !== 'patient' && currentUser.role !== 'patientAttendant') {
-              setCurrentScreen('dashboard');
-            } else {
-              setCurrentScreen('login');
-            }
-          }}
           onOpenLogin={() => setCurrentScreen('login')}
           onOpenSignup={() => setCurrentScreen('signup')}
-          onOpenPatientTutorial={() => setIsPatientTutorialOpen(true)}
         />
       )}
 
@@ -1680,7 +1486,7 @@ function CareBridgeApp() {
       {currentScreen === 'selection' && (
         <div className="flex-1 flex flex-col relative overflow-y-auto">
           {/* Top Bar with CareBridge Logo & Title */}
-          <div className="bg-[#EEF3F8] px-6 py-4 flex flex-wrap items-center justify-between border-b border-slate-200 z-10 gap-3">
+          <div className="bg-[#EEF3F8] px-6 py-4 flex flex-wrap items-center justify-between border-b border-slate-200 z-10">
             <div className="flex items-center gap-3">
               <CareBridgeLogoIcon className="h-9 w-9" />
               <span className="text-2xl font-bold tracking-tight text-[#0F3868]">CareBridge</span>
@@ -1692,22 +1498,6 @@ function CareBridgeApp() {
 
             <div className="flex items-center gap-2">
               <button
-                onClick={() => setIsPatientTutorialOpen(true)}
-                className="flex items-center gap-1.5 text-xs font-bold text-orange-700 bg-orange-50 hover:bg-orange-100 px-3 py-1.5 rounded-lg border border-orange-300 shadow-2xs transition-colors"
-                title="Watch Patient Video Tutorial"
-              >
-                <Play className="h-3.5 w-3.5 fill-orange-600 text-orange-600" />
-                <span>Video Tutorial</span>
-              </button>
-              <button
-                onClick={() => setIsHelpModalOpen(true)}
-                className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 hover:text-teal-700 bg-white px-3 py-1.5 rounded-lg border border-slate-300 shadow-2xs transition-colors"
-                title="Open Selection Guide & Tips"
-              >
-                <HelpCircle className="h-3.5 w-3.5 text-teal-600" />
-                <span>Help Guide</span>
-              </button>
-              <button
                 onClick={() => setCurrentScreen('login')}
                 className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 hover:text-slate-900 bg-white px-3 py-1.5 rounded-lg border border-slate-300 shadow-2xs transition-colors"
               >
@@ -1717,24 +1507,6 @@ function CareBridgeApp() {
             </div>
           </div>
 
-          {currentUser && ['hospital', 'bloodBank', 'oxygenProvider', 'ambulanceProvider', 'doctor', 'admin'].includes(currentUser.role) && (
-            <div className="bg-sky-50 border-b border-sky-200 px-6 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs text-sky-900 z-10">
-              <div className="flex items-center gap-2">
-                <ShieldCheck className="w-4 h-4 text-sky-600 shrink-0" />
-                <span>
-                  You are signed in with a healthcare provider account (<strong>{currentUser.role}</strong>). You can coordinate supplies from your provider portal.
-                </span>
-              </div>
-              <button
-                type="button"
-                onClick={() => setCurrentScreen('dashboard')}
-                className="px-3 py-1 bg-sky-600 hover:bg-sky-700 text-white font-bold rounded-lg text-xs shadow-xs transition-colors shrink-0"
-              >
-                Go to Provider Dashboard →
-              </button>
-            </div>
-          )}
-
           {/* Main Body with Blue Band Accent */}
           <div className="flex-1 relative p-4 sm:p-6 lg:p-10 flex flex-col justify-between">
             {/* Background Blue Band across Middle */}
@@ -1742,32 +1514,13 @@ function CareBridgeApp() {
 
             {/* Foreground Two Panels Grid: strictly side-by-side on desktop and laptop screens (md:grid-cols-2) */}
             <div className="relative z-10 w-full max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-6 lg:gap-8 items-stretch my-auto">
-
+              
               {/* PANEL 1: "1. Select Resources" (Left White Card) */}
               <div className="bg-white rounded-3xl shadow-xl p-6 sm:p-7 border border-slate-100 flex flex-col justify-between">
                 <div>
-                  <div className="flex items-center justify-between mb-3">
-                    <h2 className="text-xl sm:text-2xl font-bold text-slate-900 tracking-tight">
-                      1. Select Resources
-                    </h2>
-                    <button
-                      onClick={() => setIsPatientTutorialOpen(true)}
-                      className="text-xs font-bold text-orange-600 hover:text-orange-700 flex items-center gap-1 bg-orange-50 px-2.5 py-1 rounded-full border border-orange-200"
-                    >
-                      <Play className="w-3 h-3 fill-orange-600" />
-                      Watch Tutorial
-                    </button>
-                  </div>
-
-                  {/* Quick Feature Helper Banner */}
-                  <div className="mb-4 p-3 rounded-2xl bg-teal-50/80 border border-teal-200/80 flex items-center justify-between gap-2 text-xs">
-                    <div className="flex items-center gap-2 text-teal-900">
-                      <Sparkles className="w-4 h-4 text-teal-600 shrink-0" />
-                      <span className="text-[11px] leading-tight text-teal-950 font-medium">
-                        You can select multiple emergency modules (Beds + Blood + Oxygen + Ambulance) together.
-                      </span>
-                    </div>
-                  </div>
+                  <h2 className="text-xl sm:text-2xl font-bold text-slate-900 mb-5 tracking-tight">
+                    1. Select Resources
+                  </h2>
 
                   {/* Resource Cards Layout: Row 1 (3 items), Row 2 (2 items centered) */}
                   <div className="space-y-3.5">
@@ -1776,10 +1529,11 @@ function CareBridgeApp() {
                       {/* Hospital Beds */}
                       <div
                         onClick={() => toggleResource('beds')}
-                        className={`relative cursor-pointer rounded-2xl p-3 flex flex-col items-center justify-between text-center transition-all h-32 sm:h-34 border-2 ${selectedResources.beds
-                          ? 'bg-[#00707E] text-white border-[#00707E] shadow-md'
-                          : 'bg-white text-slate-800 border-slate-200 hover:border-teal-300'
-                          }`}
+                        className={`relative cursor-pointer rounded-2xl p-3 flex flex-col items-center justify-between text-center transition-all h-32 sm:h-34 border-2 ${
+                          selectedResources.beds
+                            ? 'bg-[#00707E] text-white border-[#00707E] shadow-md'
+                            : 'bg-white text-slate-800 border-slate-200 hover:border-teal-300'
+                        }`}
                       >
                         {selectedResources.beds && (
                           <div className="absolute top-2 right-2 h-5 w-5 rounded-full bg-white text-[#00707E] flex items-center justify-center shadow-xs">
@@ -1793,10 +1547,11 @@ function CareBridgeApp() {
                       {/* ICU Facilities */}
                       <div
                         onClick={() => toggleResource('icu')}
-                        className={`relative cursor-pointer rounded-2xl p-3 flex flex-col items-center justify-between text-center transition-all h-32 sm:h-34 border-2 ${selectedResources.icu
-                          ? 'bg-white text-slate-900 border-[#00707E] shadow-md'
-                          : 'bg-white text-slate-800 border-slate-200 hover:border-teal-300'
-                          }`}
+                        className={`relative cursor-pointer rounded-2xl p-3 flex flex-col items-center justify-between text-center transition-all h-32 sm:h-34 border-2 ${
+                          selectedResources.icu
+                            ? 'bg-white text-slate-900 border-[#00707E] shadow-md'
+                            : 'bg-white text-slate-800 border-slate-200 hover:border-teal-300'
+                        }`}
                       >
                         {selectedResources.icu && (
                           <div className="absolute top-2 right-2 h-5 w-5 rounded-full bg-[#00707E] text-white flex items-center justify-center shadow-xs">
@@ -1810,10 +1565,11 @@ function CareBridgeApp() {
                       {/* Blood */}
                       <div
                         onClick={() => toggleResource('blood')}
-                        className={`relative cursor-pointer rounded-2xl p-3 flex flex-col items-center justify-between text-center transition-all h-32 sm:h-34 border-2 ${selectedResources.blood
-                          ? 'bg-white text-slate-900 border-[#00707E] shadow-md'
-                          : 'bg-white text-slate-800 border-slate-200 hover:border-teal-300'
-                          }`}
+                        className={`relative cursor-pointer rounded-2xl p-3 flex flex-col items-center justify-between text-center transition-all h-32 sm:h-34 border-2 ${
+                          selectedResources.blood
+                            ? 'bg-white text-slate-900 border-[#00707E] shadow-md'
+                            : 'bg-white text-slate-800 border-slate-200 hover:border-teal-300'
+                        }`}
                       >
                         {selectedResources.blood && (
                           <div className="absolute top-2 right-2 h-5 w-5 rounded-full bg-[#00707E] text-white flex items-center justify-center shadow-xs">
@@ -1830,10 +1586,11 @@ function CareBridgeApp() {
                       {/* Oxygen */}
                       <div
                         onClick={() => toggleResource('oxygen')}
-                        className={`relative cursor-pointer rounded-2xl p-3 flex flex-col items-center justify-between text-center transition-all h-32 sm:h-34 border-2 ${selectedResources.oxygen
-                          ? 'bg-[#00707E] text-white border-[#00707E] shadow-md'
-                          : 'bg-white text-slate-800 border-slate-200 hover:border-teal-300'
-                          }`}
+                        className={`relative cursor-pointer rounded-2xl p-3 flex flex-col items-center justify-between text-center transition-all h-32 sm:h-34 border-2 ${
+                          selectedResources.oxygen
+                            ? 'bg-[#00707E] text-white border-[#00707E] shadow-md'
+                            : 'bg-white text-slate-800 border-slate-200 hover:border-teal-300'
+                        }`}
                       >
                         {selectedResources.oxygen && (
                           <div className="absolute top-2 right-2 h-5 w-5 rounded-full bg-white text-[#00707E] flex items-center justify-center shadow-xs">
@@ -1847,10 +1604,11 @@ function CareBridgeApp() {
                       {/* Ambulance Services */}
                       <div
                         onClick={() => toggleResource('ambulance')}
-                        className={`relative cursor-pointer rounded-2xl p-3 flex flex-col items-center justify-between text-center transition-all h-32 sm:h-34 border-2 ${selectedResources.ambulance
-                          ? 'bg-[#00707E] text-white border-[#00707E] shadow-md'
-                          : 'bg-white text-slate-800 border-slate-200 hover:border-teal-300'
-                          }`}
+                        className={`relative cursor-pointer rounded-2xl p-3 flex flex-col items-center justify-between text-center transition-all h-32 sm:h-34 border-2 ${
+                          selectedResources.ambulance
+                            ? 'bg-[#00707E] text-white border-[#00707E] shadow-md'
+                            : 'bg-white text-slate-800 border-slate-200 hover:border-teal-300'
+                        }`}
                       >
                         {selectedResources.ambulance && (
                           <div className="absolute top-2 right-2 h-5 w-5 rounded-full bg-white text-[#00707E] flex items-center justify-center shadow-xs">
@@ -1864,10 +1622,11 @@ function CareBridgeApp() {
                       {/* Doctor Assistance */}
                       <div
                         onClick={() => toggleResource('doctor')}
-                        className={`relative cursor-pointer rounded-2xl p-3 flex flex-col items-center justify-between text-center transition-all h-32 sm:h-34 border-2 ${selectedResources.doctor
-                          ? 'bg-[#00707E] text-white border-[#00707E] shadow-md'
-                          : 'bg-white text-slate-800 border-slate-200 hover:border-teal-300'
-                          }`}
+                        className={`relative cursor-pointer rounded-2xl p-3 flex flex-col items-center justify-between text-center transition-all h-32 sm:h-34 border-2 ${
+                          selectedResources.doctor
+                            ? 'bg-[#00707E] text-white border-[#00707E] shadow-md'
+                            : 'bg-white text-slate-800 border-slate-200 hover:border-teal-300'
+                        }`}
                       >
                         {selectedResources.doctor && (
                           <div className="absolute top-2 right-2 h-5 w-5 rounded-full bg-white text-[#00707E] flex items-center justify-center shadow-xs">
@@ -1906,7 +1665,7 @@ function CareBridgeApp() {
                       />
                     </div>
                     <button
-                      onClick={() => { }}
+                      onClick={() => {}}
                       className="px-6 py-2 rounded-xl bg-[#00707E] hover:bg-[#005B66] text-white text-sm font-semibold transition-colors shadow-xs shrink-0"
                     >
                       Search
@@ -1936,10 +1695,11 @@ function CareBridgeApp() {
 
                       <button
                         onClick={() => handleSelectProvider('prov-01')}
-                        className={`px-4 py-2 rounded-lg text-xs font-semibold transition-colors shadow-xs shrink-0 ${selectedProviderId === 'prov-01'
-                          ? 'bg-[#005863] text-white ring-2 ring-teal-400'
-                          : 'bg-[#00707E] hover:bg-[#005B66] text-white'
-                          }`}
+                        className={`px-4 py-2 rounded-lg text-xs font-semibold transition-colors shadow-xs shrink-0 ${
+                          selectedProviderId === 'prov-01'
+                            ? 'bg-[#005863] text-white ring-2 ring-teal-400'
+                            : 'bg-[#00707E] hover:bg-[#005B66] text-white'
+                        }`}
                       >
                         {selectedProviderId === 'prov-01' ? 'Selected ✓' : 'Select Provider'}
                       </button>
@@ -1968,10 +1728,11 @@ function CareBridgeApp() {
 
                       <button
                         onClick={() => handleSelectProvider('prov-02')}
-                        className={`px-4 py-2 rounded-lg text-xs font-semibold transition-colors shadow-xs shrink-0 ${selectedProviderId === 'prov-02'
-                          ? 'bg-[#005863] text-white ring-2 ring-teal-400'
-                          : 'bg-[#00707E] hover:bg-[#005B66] text-white'
-                          }`}
+                        className={`px-4 py-2 rounded-lg text-xs font-semibold transition-colors shadow-xs shrink-0 ${
+                          selectedProviderId === 'prov-02'
+                            ? 'bg-[#005863] text-white ring-2 ring-teal-400'
+                            : 'bg-[#00707E] hover:bg-[#005B66] text-white'
+                        }`}
                       >
                         {selectedProviderId === 'prov-02' ? 'Selected ✓' : 'Select Provider'}
                       </button>
@@ -1998,10 +1759,11 @@ function CareBridgeApp() {
 
                       <button
                         onClick={() => handleSelectProvider('prov-03')}
-                        className={`px-4 py-2 rounded-lg text-xs font-semibold transition-colors shadow-xs shrink-0 ${selectedProviderId === 'prov-03'
-                          ? 'bg-[#005863] text-white ring-2 ring-teal-400'
-                          : 'bg-[#00707E] hover:bg-[#005B66] text-white'
-                          }`}
+                        className={`px-4 py-2 rounded-lg text-xs font-semibold transition-colors shadow-xs shrink-0 ${
+                          selectedProviderId === 'prov-03'
+                            ? 'bg-[#005863] text-white ring-2 ring-teal-400'
+                            : 'bg-[#00707E] hover:bg-[#005B66] text-white'
+                        }`}
                       >
                         {selectedProviderId === 'prov-03' ? 'Selected ✓' : 'Select Provider'}
                       </button>
@@ -2055,24 +1817,6 @@ function CareBridgeApp() {
             </div>
           </div>
 
-          {currentUser && ['hospital', 'bloodBank', 'oxygenProvider', 'ambulanceProvider', 'doctor', 'admin'].includes(currentUser.role) && (
-            <div className="bg-sky-50 border-b border-sky-200 px-6 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs text-sky-900 z-10">
-              <div className="flex items-center gap-2">
-                <ShieldCheck className="w-4 h-4 text-sky-600 shrink-0" />
-                <span>
-                  You are signed in with a healthcare provider account (<strong>{currentUser.role}</strong>). You can coordinate supplies from your provider portal.
-                </span>
-              </div>
-              <button
-                type="button"
-                onClick={() => setCurrentScreen('dashboard')}
-                className="px-3 py-1 bg-sky-600 hover:bg-sky-700 text-white font-bold rounded-lg text-xs shadow-xs transition-colors shrink-0"
-              >
-                Go to Provider Dashboard →
-              </button>
-            </div>
-          )}
-
           {/* Main Body with Blue Band Accent */}
           <div className="flex-1 relative p-4 sm:p-6 lg:p-8 flex flex-col justify-between">
             {/* Background Blue Band across Middle */}
@@ -2080,10 +1824,10 @@ function CareBridgeApp() {
 
             {/* Main Two-Column Layout */}
             <div className="relative z-10 w-full max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-6 items-start my-auto">
-
+              
               {/* LEFT COLUMN: Case Intake & Clinical Triage Form (7 Columns) */}
               <div className="lg:col-span-7 bg-white rounded-3xl shadow-xl p-6 sm:p-7 border border-slate-100">
-
+                
                 {/* Form Header */}
                 <div className="flex items-center justify-between border-b border-slate-100 pb-4 mb-5">
                   <div className="flex items-center gap-3">
@@ -2105,7 +1849,7 @@ function CareBridgeApp() {
                 </div>
 
                 <form onSubmit={handleSubmitCase} className="space-y-5">
-
+                  
                   {/* SECTION 1: PATIENT INFORMATION */}
                   <div>
                     <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-3 flex items-center gap-1.5">
@@ -2233,8 +1977,9 @@ function CareBridgeApp() {
                             if (formErrors.patientName) setFormErrors((prev) => ({ ...prev, patientName: '' }));
                           }}
                           placeholder="e.g. Ramesh Kumar"
-                          className={`w-full px-3.5 py-2 text-sm bg-white border rounded-xl focus:outline-none focus:ring-2 focus:ring-[#00707E] font-medium text-slate-900 ${formErrors.patientName ? 'border-red-500 bg-red-50/20' : 'border-slate-300'
-                            }`}
+                          className={`w-full px-3.5 py-2 text-sm bg-white border rounded-xl focus:outline-none focus:ring-2 focus:ring-[#00707E] font-medium text-slate-900 ${
+                            formErrors.patientName ? 'border-red-500 bg-red-50/20' : 'border-slate-300'
+                          }`}
                         />
                         {formErrors.patientName && (
                           <p className="text-xs text-red-600 mt-1 flex items-center gap-1">
@@ -2260,8 +2005,9 @@ function CareBridgeApp() {
                               if (formErrors.patientAge) setFormErrors((prev) => ({ ...prev, patientAge: '' }));
                             }}
                             placeholder="e.g. 42"
-                            className={`w-full px-3.5 py-2 text-sm bg-white border rounded-xl focus:outline-none focus:ring-2 focus:ring-[#00707E] font-medium text-slate-900 ${formErrors.patientAge ? 'border-red-500 bg-red-50/20' : 'border-slate-300'
-                              }`}
+                            className={`w-full px-3.5 py-2 text-sm bg-white border rounded-xl focus:outline-none focus:ring-2 focus:ring-[#00707E] font-medium text-slate-900 ${
+                              formErrors.patientAge ? 'border-red-500 bg-red-50/20' : 'border-slate-300'
+                            }`}
                           />
                           {formErrors.patientAge && (
                             <p className="text-xs text-red-600 mt-1 flex items-center gap-1">
@@ -2325,8 +2071,9 @@ function CareBridgeApp() {
                             if (formErrors.patientCondition) setFormErrors((prev) => ({ ...prev, patientCondition: '' }));
                           }}
                           placeholder="e.g. Acute chest pain, shortness of breath, trauma"
-                          className={`w-full px-3.5 py-2 text-sm bg-white border rounded-xl focus:outline-none focus:ring-2 focus:ring-[#00707E] font-medium text-slate-900 ${formErrors.patientCondition ? 'border-red-500 bg-red-50/20' : 'border-slate-300'
-                            }`}
+                          className={`w-full px-3.5 py-2 text-sm bg-white border rounded-xl focus:outline-none focus:ring-2 focus:ring-[#00707E] font-medium text-slate-900 ${
+                            formErrors.patientCondition ? 'border-red-500 bg-red-50/20' : 'border-slate-300'
+                          }`}
                         />
                         {formErrors.patientCondition && (
                           <p className="text-xs text-red-600 mt-1 flex items-center gap-1">
@@ -2396,10 +2143,11 @@ function CareBridgeApp() {
                           setTriagePriority('immediate');
                           setEmergencyPriority('Critical');
                         }}
-                        className={`cursor-pointer rounded-xl p-2.5 border-2 text-left transition-all ${emergencyPriority === 'Critical'
-                          ? 'border-red-600 bg-red-50 ring-2 ring-red-400/20'
-                          : 'border-slate-200 bg-white hover:border-red-300'
-                          }`}
+                        className={`cursor-pointer rounded-xl p-2.5 border-2 text-left transition-all ${
+                          emergencyPriority === 'Critical'
+                            ? 'border-red-600 bg-red-50 ring-2 ring-red-400/20'
+                            : 'border-slate-200 bg-white hover:border-red-300'
+                        }`}
                       >
                         <span className="text-[10px] font-black uppercase px-1.5 py-0.5 rounded bg-red-600 text-white">Critical</span>
                         <div className="font-bold text-xs text-red-950 mt-1">Level 1 Immediate</div>
@@ -2409,10 +2157,11 @@ function CareBridgeApp() {
                           setTriagePriority('emergency');
                           setEmergencyPriority('High');
                         }}
-                        className={`cursor-pointer rounded-xl p-2.5 border-2 text-left transition-all ${emergencyPriority === 'High'
-                          ? 'border-amber-500 bg-amber-50 ring-2 ring-amber-400/20'
-                          : 'border-slate-200 bg-white hover:border-amber-300'
-                          }`}
+                        className={`cursor-pointer rounded-xl p-2.5 border-2 text-left transition-all ${
+                          emergencyPriority === 'High'
+                            ? 'border-amber-500 bg-amber-50 ring-2 ring-amber-400/20'
+                            : 'border-slate-200 bg-white hover:border-amber-300'
+                        }`}
                       >
                         <span className="text-[10px] font-black uppercase px-1.5 py-0.5 rounded bg-amber-600 text-white">High</span>
                         <div className="font-bold text-xs text-amber-950 mt-1">Level 2 Emergency</div>
@@ -2422,10 +2171,11 @@ function CareBridgeApp() {
                           setTriagePriority('urgent');
                           setEmergencyPriority('Medium');
                         }}
-                        className={`cursor-pointer rounded-xl p-2.5 border-2 text-left transition-all ${emergencyPriority === 'Medium'
-                          ? 'border-yellow-500 bg-yellow-50 ring-2 ring-yellow-400/20'
-                          : 'border-slate-200 bg-white hover:border-yellow-300'
-                          }`}
+                        className={`cursor-pointer rounded-xl p-2.5 border-2 text-left transition-all ${
+                          emergencyPriority === 'Medium'
+                            ? 'border-yellow-500 bg-yellow-50 ring-2 ring-yellow-400/20'
+                            : 'border-slate-200 bg-white hover:border-yellow-300'
+                        }`}
                       >
                         <span className="text-[10px] font-black uppercase px-1.5 py-0.5 rounded bg-yellow-600 text-white">Medium</span>
                         <div className="font-bold text-xs text-yellow-950 mt-1">Level 3 Urgent</div>
@@ -2435,10 +2185,11 @@ function CareBridgeApp() {
                           setTriagePriority('semi-urgent');
                           setEmergencyPriority('Low');
                         }}
-                        className={`cursor-pointer rounded-xl p-2.5 border-2 text-left transition-all ${emergencyPriority === 'Low'
-                          ? 'border-emerald-500 bg-emerald-50 ring-2 ring-emerald-400/20'
-                          : 'border-slate-200 bg-white hover:border-emerald-300'
-                          }`}
+                        className={`cursor-pointer rounded-xl p-2.5 border-2 text-left transition-all ${
+                          emergencyPriority === 'Low'
+                            ? 'border-emerald-500 bg-emerald-50 ring-2 ring-emerald-400/20'
+                            : 'border-slate-200 bg-white hover:border-emerald-300'
+                        }`}
                       >
                         <span className="text-[10px] font-black uppercase px-1.5 py-0.5 rounded bg-emerald-600 text-white">Low</span>
                         <div className="font-bold text-xs text-emerald-950 mt-1">Level 4 Routine</div>
@@ -2458,8 +2209,9 @@ function CareBridgeApp() {
                           if (formErrors.emergencyDescription) setFormErrors((prev) => ({ ...prev, emergencyDescription: '' }));
                         }}
                         placeholder="Describe present symptoms, injury mechanism, current vitals, and necessary on-scene care..."
-                        className={`w-full px-3.5 py-2 text-sm bg-white border rounded-xl focus:outline-none focus:ring-2 focus:ring-[#00707E] font-medium text-slate-900 ${formErrors.emergencyDescription ? 'border-red-500 bg-red-50/20' : 'border-slate-300'
-                          }`}
+                        className={`w-full px-3.5 py-2 text-sm bg-white border rounded-xl focus:outline-none focus:ring-2 focus:ring-[#00707E] font-medium text-slate-900 ${
+                          formErrors.emergencyDescription ? 'border-red-500 bg-red-50/20' : 'border-slate-300'
+                        }`}
                       />
                       {formErrors.emergencyDescription && (
                         <p className="text-xs text-red-600 mt-1 flex items-center gap-1">
@@ -2480,8 +2232,9 @@ function CareBridgeApp() {
                     </div>
 
                     <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                      <label className={`flex items-center gap-2 p-2.5 rounded-xl border cursor-pointer transition-all ${selectedResources.beds ? 'bg-teal-50 border-[#00707E] text-teal-950 font-bold' : 'bg-white border-slate-200 text-slate-700'
-                        }`}>
+                      <label className={`flex items-center gap-2 p-2.5 rounded-xl border cursor-pointer transition-all ${
+                        selectedResources.beds ? 'bg-teal-50 border-[#00707E] text-teal-950 font-bold' : 'bg-white border-slate-200 text-slate-700'
+                      }`}>
                         <input
                           type="checkbox"
                           checked={selectedResources.beds || false}
@@ -2491,8 +2244,9 @@ function CareBridgeApp() {
                         <span className="text-xs">Hospital Bed</span>
                       </label>
 
-                      <label className={`flex items-center gap-2 p-2.5 rounded-xl border cursor-pointer transition-all ${selectedResources.icu ? 'bg-teal-50 border-[#00707E] text-teal-950 font-bold' : 'bg-white border-slate-200 text-slate-700'
-                        }`}>
+                      <label className={`flex items-center gap-2 p-2.5 rounded-xl border cursor-pointer transition-all ${
+                        selectedResources.icu ? 'bg-teal-50 border-[#00707E] text-teal-950 font-bold' : 'bg-white border-slate-200 text-slate-700'
+                      }`}>
                         <input
                           type="checkbox"
                           checked={selectedResources.icu || false}
@@ -2502,8 +2256,9 @@ function CareBridgeApp() {
                         <span className="text-xs">ICU Facility</span>
                       </label>
 
-                      <label className={`flex items-center gap-2 p-2.5 rounded-xl border cursor-pointer transition-all ${selectedResources.blood ? 'bg-teal-50 border-[#00707E] text-teal-950 font-bold' : 'bg-white border-slate-200 text-slate-700'
-                        }`}>
+                      <label className={`flex items-center gap-2 p-2.5 rounded-xl border cursor-pointer transition-all ${
+                        selectedResources.blood ? 'bg-teal-50 border-[#00707E] text-teal-950 font-bold' : 'bg-white border-slate-200 text-slate-700'
+                      }`}>
                         <input
                           type="checkbox"
                           checked={selectedResources.blood || false}
@@ -2513,8 +2268,9 @@ function CareBridgeApp() {
                         <span className="text-xs">Blood Requirement</span>
                       </label>
 
-                      <label className={`flex items-center gap-2 p-2.5 rounded-xl border cursor-pointer transition-all ${selectedResources.oxygen ? 'bg-teal-50 border-[#00707E] text-teal-950 font-bold' : 'bg-white border-slate-200 text-slate-700'
-                        }`}>
+                      <label className={`flex items-center gap-2 p-2.5 rounded-xl border cursor-pointer transition-all ${
+                        selectedResources.oxygen ? 'bg-teal-50 border-[#00707E] text-teal-950 font-bold' : 'bg-white border-slate-200 text-slate-700'
+                      }`}>
                         <input
                           type="checkbox"
                           checked={selectedResources.oxygen || false}
@@ -2524,8 +2280,9 @@ function CareBridgeApp() {
                         <span className="text-xs">Oxygen Supply</span>
                       </label>
 
-                      <label className={`flex items-center gap-2 p-2.5 rounded-xl border cursor-pointer transition-all ${selectedResources.ambulance ? 'bg-teal-50 border-[#00707E] text-teal-950 font-bold' : 'bg-white border-slate-200 text-slate-700'
-                        }`}>
+                      <label className={`flex items-center gap-2 p-2.5 rounded-xl border cursor-pointer transition-all ${
+                        selectedResources.ambulance ? 'bg-teal-50 border-[#00707E] text-teal-950 font-bold' : 'bg-white border-slate-200 text-slate-700'
+                      }`}>
                         <input
                           type="checkbox"
                           checked={selectedResources.ambulance || false}
@@ -2535,8 +2292,9 @@ function CareBridgeApp() {
                         <span className="text-xs">Ambulance</span>
                       </label>
 
-                      <label className={`flex items-center gap-2 p-2.5 rounded-xl border cursor-pointer transition-all ${selectedResources.doctor ? 'bg-teal-50 border-[#00707E] text-teal-950 font-bold' : 'bg-white border-slate-200 text-slate-700'
-                        }`}>
+                      <label className={`flex items-center gap-2 p-2.5 rounded-xl border cursor-pointer transition-all ${
+                        selectedResources.doctor ? 'bg-teal-50 border-[#00707E] text-teal-950 font-bold' : 'bg-white border-slate-200 text-slate-700'
+                      }`}>
                         <input
                           type="checkbox"
                           checked={selectedResources.doctor || false}
@@ -2700,8 +2458,9 @@ function CareBridgeApp() {
                             if (formErrors.incidentAddress) setFormErrors((prev) => ({ ...prev, incidentAddress: '' }));
                           }}
                           placeholder="Street address, landmark, building name, Hubballi"
-                          className={`w-full pl-10 pr-3.5 py-2 text-sm bg-white border rounded-xl focus:outline-none focus:ring-2 focus:ring-[#00707E] font-medium text-slate-900 ${formErrors.incidentAddress ? 'border-red-500 bg-red-50/20' : 'border-slate-300'
-                            }`}
+                          className={`w-full pl-10 pr-3.5 py-2 text-sm bg-white border rounded-xl focus:outline-none focus:ring-2 focus:ring-[#00707E] font-medium text-slate-900 ${
+                            formErrors.incidentAddress ? 'border-red-500 bg-red-50/20' : 'border-slate-300'
+                          }`}
                         />
                       </div>
 
@@ -2746,12 +2505,12 @@ function CareBridgeApp() {
                           value={contactPerson}
                           onChange={(e) => {
                             setContactPerson(e.target.value);
-                            setAttendantName(e.target.value);
-                            if (formErrors.contactPerson) setFormErrors((prev) => ({ ...prev, contactPerson: '', attendantName: '' }));
+                            if (formErrors.contactPerson) setFormErrors((prev) => ({ ...prev, contactPerson: '' }));
                           }}
                           placeholder="e.g. Sahana S. or Ramesh K."
-                          className={`w-full px-3.5 py-2 text-sm bg-white border rounded-xl focus:outline-none focus:ring-2 focus:ring-[#00707E] font-medium text-slate-900 ${formErrors.contactPerson ? 'border-red-500 bg-red-50/20' : 'border-slate-300'
-                            }`}
+                          className={`w-full px-3.5 py-2 text-sm bg-white border rounded-xl focus:outline-none focus:ring-2 focus:ring-[#00707E] font-medium text-slate-900 ${
+                            formErrors.contactPerson ? 'border-red-500 bg-red-50/20' : 'border-slate-300'
+                          }`}
                         />
                         {formErrors.contactPerson && (
                           <p className="text-xs text-red-600 mt-1 flex items-center gap-1">
@@ -2769,12 +2528,12 @@ function CareBridgeApp() {
                           value={contactPhone}
                           onChange={(e) => {
                             setContactPhone(e.target.value);
-                            setAttendantPhone(e.target.value);
-                            if (formErrors.contactPhone) setFormErrors((prev) => ({ ...prev, contactPhone: '', attendantPhone: '' }));
+                            if (formErrors.contactPhone) setFormErrors((prev) => ({ ...prev, contactPhone: '' }));
                           }}
                           placeholder="+91 98451 98765"
-                          className={`w-full px-3.5 py-2 text-sm bg-white border rounded-xl focus:outline-none focus:ring-2 focus:ring-[#00707E] font-medium text-slate-900 ${formErrors.contactPhone ? 'border-red-500 bg-red-50/20' : 'border-slate-300'
-                            }`}
+                          className={`w-full px-3.5 py-2 text-sm bg-white border rounded-xl focus:outline-none focus:ring-2 focus:ring-[#00707E] font-medium text-slate-900 ${
+                            formErrors.contactPhone ? 'border-red-500 bg-red-50/20' : 'border-slate-300'
+                          }`}
                         />
                         {formErrors.contactPhone && (
                           <p className="text-xs text-red-600 mt-1 flex items-center gap-1">
@@ -2878,7 +2637,7 @@ function CareBridgeApp() {
 
               {/* RIGHT COLUMN: Selected Resources Summary & Dispatch Action (5 Columns) */}
               <div className="lg:col-span-5 space-y-5">
-
+                
                 {/* CARD A: Confirmed Resources from Screen B */}
                 <div className="bg-[#EEF3F8] rounded-3xl shadow-xl p-5 sm:p-6 border border-slate-200/60">
                   <div className="flex items-center justify-between mb-3">
@@ -2981,18 +2740,11 @@ function CareBridgeApp() {
 
                   {/* General Form Error Alert */}
                   {Object.keys(formErrors).length > 0 && (
-                    <div className="p-3 bg-red-50 border border-red-200 rounded-xl space-y-1.5">
-                      <div className="flex items-start gap-2">
-                        <AlertTriangle className="h-4 w-4 text-red-600 shrink-0 mt-0.5" />
-                        <p className="text-xs text-red-700 font-bold leading-relaxed">
-                          Please resolve the following required fields before submitting:
-                        </p>
-                      </div>
-                      <ul className="text-xs text-red-600 list-disc list-inside space-y-0.5 pl-5">
-                        {Object.entries(formErrors).map(([key, msg]) => (
-                          <li key={key}>{msg}</li>
-                        ))}
-                      </ul>
+                    <div className="p-3 bg-red-50 border border-red-200 rounded-xl flex items-start gap-2">
+                      <AlertTriangle className="h-4 w-4 text-red-600 shrink-0 mt-0.5" />
+                      <p className="text-xs text-red-700 font-medium leading-relaxed">
+                        Please fill in all required fields marked with * before submitting this emergency case.
+                      </p>
                     </div>
                   )}
 
@@ -3061,7 +2813,7 @@ function CareBridgeApp() {
           patientGender: linkedPatients[0]?.patientGender || 'Other',
           patientBloodGroup: linkedPatients[0]?.patientBloodGroup || 'Unknown',
           patientCondition: 'Emergency medical intake',
-          attendantName: currentUser?.displayName || currentUser?.email?.split('@')[0] || 'Patient Attendant',
+          attendantName: currentUser?.displayName || 'Sahana S.',
           attendantRelation: linkedPatients[0]?.relationship || 'Attendant',
           attendantPhone: linkedPatients[0]?.emergencyContactPhone || '+91 98451 98765',
           incidentAddress: searchLocation || 'Plot 42, Vidyanagar Main Road, Hubballi, Karnataka',
@@ -3147,7 +2899,7 @@ function CareBridgeApp() {
 
               {/* Foreground Two Panels Grid: strictly side-by-side on desktop (md:grid-cols-2) */}
               <div className="relative z-10 w-full max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-6 lg:gap-8 items-stretch my-auto">
-
+                
                 {/* PANEL 1: Case Overview & Patient Dossier (Left White Card) */}
                 <div className="bg-white rounded-3xl shadow-xl p-6 sm:p-7 border border-slate-100 flex flex-col justify-between">
                   <div>
@@ -3208,14 +2960,15 @@ function CareBridgeApp() {
 
                       <div className="flex justify-between items-center border-b border-slate-200/60 pb-1.5">
                         <span className="text-slate-500 font-medium">Triage Urgency:</span>
-                        <span className={`inline-flex items-center gap-1 font-bold uppercase tracking-wider text-[11px] px-2 py-0.5 rounded ${displayCase.triagePriority === 'immediate'
-                          ? 'bg-red-100 text-red-700 border border-red-300'
-                          : displayCase.triagePriority === 'emergency'
+                        <span className={`inline-flex items-center gap-1 font-bold uppercase tracking-wider text-[11px] px-2 py-0.5 rounded ${
+                          displayCase.triagePriority === 'immediate'
+                            ? 'bg-red-100 text-red-700 border border-red-300'
+                            : displayCase.triagePriority === 'emergency'
                             ? 'bg-amber-100 text-amber-800 border border-amber-300'
                             : displayCase.triagePriority === 'urgent'
-                              ? 'bg-yellow-100 text-yellow-800 border border-yellow-300'
-                              : 'bg-emerald-100 text-emerald-800 border border-emerald-300'
-                          }`}>
+                            ? 'bg-yellow-100 text-yellow-800 border border-yellow-300'
+                            : 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                        }`}>
                           <Activity className="h-3 w-3" />
                           Level {displayCase.triagePriority === 'immediate' ? '1 - Immediate' : displayCase.triagePriority === 'emergency' ? '2 - Emergency' : displayCase.triagePriority === 'urgent' ? '3 - Urgent' : '4 - Semi-Urgent'}
                         </span>
@@ -3294,14 +3047,15 @@ function CareBridgeApp() {
                             <div>
                               <div className="flex items-center gap-2">
                                 <span className="font-bold text-xs text-slate-900">{req.resource}</span>
-                                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${req.code === 'dispatched'
-                                  ? 'bg-teal-100 text-teal-800 border border-teal-300'
-                                  : req.code === 'reserved'
+                                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                                  req.code === 'dispatched'
+                                    ? 'bg-teal-100 text-teal-800 border border-teal-300'
+                                    : req.code === 'reserved'
                                     ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
                                     : req.code === 'pending'
-                                      ? 'bg-amber-100 text-amber-800 border border-amber-300'
-                                      : 'bg-blue-100 text-blue-800 border border-blue-300'
-                                  }`}>
+                                    ? 'bg-amber-100 text-amber-800 border border-amber-300'
+                                    : 'bg-blue-100 text-blue-800 border border-blue-300'
+                                }`}>
                                   {req.status}
                                 </span>
                               </div>
@@ -3366,7 +3120,7 @@ function CareBridgeApp() {
             {isViewCaseModalOpen && (
               <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
                 <div className="bg-white rounded-3xl shadow-2xl max-w-xl w-full p-6 sm:p-7 border border-slate-100 max-h-[90vh] overflow-y-auto">
-
+                  
                   {/* Modal Header */}
                   <div className="flex items-center justify-between pb-4 border-b border-slate-100 mb-4">
                     <div className="flex items-center gap-2.5">
@@ -3468,16 +3222,6 @@ function CareBridgeApp() {
               </div>
             )}
 
-            {/* Patient & Family Attendant Operations Feedback Section */}
-            <div className="mt-8 max-w-5xl mx-auto w-full pb-6">
-              <FeedbackForm
-                role="patient"
-                roleLabel="Patient & Family Attendant"
-                title="Patient & Attendant Experience Feedback"
-                description="Help our coordination teams improve emergency intake, bed allocation, oxygen delivery, and ambulance dispatch."
-              />
-            </div>
-
           </div>
         );
       })()}
@@ -3499,1557 +3243,1526 @@ function CareBridgeApp() {
         ) : activeRole === 'admin' ? (
           <AdminDashboard />
         ) : (() => {
-          // Dynamic dashboard calculations from available casesList
-          const totalCasesCount = casesList.length;
-          const activeCasesCount = casesList.filter((c) => c.status !== 'Completed' && c.status !== 'Cancelled').length;
-          const completedCasesCount = casesList.filter((c) => c.status === 'Completed').length;
-          const pendingResourceCount = casesList.reduce((acc, c) => {
-            const pendingInCase = c.individualStatuses?.filter(
-              (s) => s.code === 'pending' || s.code === 'in-review' || s.code === 'reserved'
-            ).length || 0;
-            return acc + pendingInCase;
-          }, 0);
+        // Dynamic dashboard calculations from available casesList
+        const totalCasesCount = casesList.length;
+        const activeCasesCount = casesList.filter((c) => c.status !== 'Completed' && c.status !== 'Cancelled').length;
+        const completedCasesCount = casesList.filter((c) => c.status === 'Completed').length;
+        const pendingResourceCount = casesList.reduce((acc, c) => {
+          const pendingInCase = c.individualStatuses?.filter(
+            (s) => s.code === 'pending' || s.code === 'in-review' || s.code === 'reserved'
+          ).length || 0;
+          return acc + pendingInCase;
+        }, 0);
 
-          // Active case to highlight in Resource Request Summary (either first active case or submittedCase)
-          const primaryActiveCase = casesList.find((c) => c.status !== 'Completed' && c.status !== 'Cancelled') || casesList[0] || null;
+        // Active case to highlight in Resource Request Summary (either first active case or submittedCase)
+        const primaryActiveCase = casesList.find((c) => c.status !== 'Completed' && c.status !== 'Cancelled') || casesList[0] || null;
 
-          // Triage badge helper
-          const getTriageBadge = (priority: string) => {
-            switch (priority) {
-              case 'immediate':
-                return (
-                  <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-red-100 text-red-800 border border-red-200 flex items-center gap-1">
-                    <span className="h-1.5 w-1.5 rounded-full bg-red-600 animate-pulse" />
-                    Immediate (Priority 1)
-                  </span>
-                );
-              case 'emergency':
-                return (
-                  <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-amber-100 text-amber-900 border border-amber-200">
-                    Emergency (Priority 2)
-                  </span>
-                );
-              case 'urgent':
-                return (
-                  <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
-                    Urgent (Priority 3)
-                  </span>
-                );
-              default:
-                return (
-                  <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-sky-100 text-sky-800 border border-sky-200">
-                    Semi-Urgent (Priority 4)
-                  </span>
-                );
-            }
-          };
+        // Triage badge helper
+        const getTriageBadge = (priority: string) => {
+          switch (priority) {
+            case 'immediate':
+              return (
+                <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-red-100 text-red-800 border border-red-200 flex items-center gap-1">
+                  <span className="h-1.5 w-1.5 rounded-full bg-red-600 animate-pulse" />
+                  Immediate (Priority 1)
+                </span>
+              );
+            case 'emergency':
+              return (
+                <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-amber-100 text-amber-900 border border-amber-200">
+                  Emergency (Priority 2)
+                </span>
+              );
+            case 'urgent':
+              return (
+                <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                  Urgent (Priority 3)
+                </span>
+              );
+            default:
+              return (
+                <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-sky-100 text-sky-800 border border-sky-200">
+                  Semi-Urgent (Priority 4)
+                </span>
+              );
+          }
+        };
 
-          return (
-            <div className="flex-1 flex flex-col bg-[#EEF3F8]">
-
-              {/* Top Navigation Bar */}
-              <div className="bg-white px-4 sm:px-6 py-3.5 flex items-center justify-between border-b border-slate-200 shadow-2xs z-20">
-                <div className="flex items-center gap-3">
-                  <CareBridgeLogoIcon className="h-9 w-9" />
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xl sm:text-2xl font-bold tracking-tight text-[#0F3868]">CareBridge</span>
-                      <span className="hidden sm:inline text-slate-300">|</span>
-                      <span className="text-sm sm:text-base font-semibold text-slate-700 hidden sm:inline">
-                        Patient Emergency Dashboard
-                      </span>
-                    </div>
-                    <span className="text-[11px] text-slate-500 flex items-center gap-1 font-medium sm:hidden">
+        return (
+          <div className="flex-1 flex flex-col bg-[#EEF3F8]">
+            
+            {/* Top Navigation Bar */}
+            <div className="bg-white px-4 sm:px-6 py-3.5 flex items-center justify-between border-b border-slate-200 shadow-2xs z-20">
+              <div className="flex items-center gap-3">
+                <CareBridgeLogoIcon className="h-9 w-9" />
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xl sm:text-2xl font-bold tracking-tight text-[#0F3868]">CareBridge</span>
+                    <span className="hidden sm:inline text-slate-300">|</span>
+                    <span className="text-sm sm:text-base font-semibold text-slate-700 hidden sm:inline">
                       Patient Emergency Dashboard
                     </span>
                   </div>
-                </div>
-
-                {/* User Profile & Primary Action */}
-                <div className="flex items-center gap-2 sm:gap-3">
-                  <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-100 border border-slate-200 text-xs text-slate-700">
-                    <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
-                    <span className="font-semibold text-slate-800">{currentUser?.displayName || currentUser?.email?.split('@')[0] || 'CareBridge User'}</span>
-                    <span className="text-slate-400">•</span>
-                    <span className="text-slate-500">Patient Attendant</span>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => setIsLinkPatientModalOpen(true)}
-                    className="flex items-center gap-1 px-3 py-2 rounded-xl bg-teal-50 border border-teal-300 text-teal-900 hover:bg-teal-100 text-xs font-bold shadow-2xs transition-colors"
-                  >
-                    <UserPlus className="h-4 w-4 text-teal-700" />
-                    <span>+ Link Patient</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={handleCreateNewCase}
-                    className="flex items-center gap-1.5 px-3 sm:px-4 py-2 rounded-xl bg-[#00707E] hover:bg-[#005B66] text-white text-xs sm:text-sm font-bold shadow-xs transition-colors active:scale-[0.98]"
-                  >
-                    <PlusCircle className="h-4 w-4" />
-                    <span>+ New Emergency Case</span>
-                  </button>
+                  <span className="text-[11px] text-slate-500 flex items-center gap-1 font-medium sm:hidden">
+                    Patient Emergency Dashboard
+                  </span>
                 </div>
               </div>
 
-              {/* Dashboard Hero & Overview Statistics */}
-              <div className="bg-gradient-to-r from-[#0F3868] via-[#0F4C81] to-[#00707E] text-white px-4 sm:px-8 py-6 sm:py-8 shadow-inner">
-                <div className="max-w-7xl mx-auto">
-                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+              {/* User Profile & Primary Action */}
+              <div className="flex items-center gap-2 sm:gap-3">
+                <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-100 border border-slate-200 text-xs text-slate-700">
+                  <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+                  <span className="font-semibold text-slate-800">{currentUser?.displayName || 'Sahana S.'}</span>
+                  <span className="text-slate-400">•</span>
+                  <span className="text-slate-500">Patient Attendant</span>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setIsLinkPatientModalOpen(true)}
+                  className="flex items-center gap-1 px-3 py-2 rounded-xl bg-teal-50 border border-teal-300 text-teal-900 hover:bg-teal-100 text-xs font-bold shadow-2xs transition-colors"
+                >
+                  <UserPlus className="h-4 w-4 text-teal-700" />
+                  <span>+ Link Patient</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleCreateNewCase}
+                  className="flex items-center gap-1.5 px-3 sm:px-4 py-2 rounded-xl bg-[#00707E] hover:bg-[#005B66] text-white text-xs sm:text-sm font-bold shadow-xs transition-colors active:scale-[0.98]"
+                >
+                  <PlusCircle className="h-4 w-4" />
+                  <span>+ New Emergency Case</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Dashboard Hero & Overview Statistics */}
+            <div className="bg-gradient-to-r from-[#0F3868] via-[#0F4C81] to-[#00707E] text-white px-4 sm:px-8 py-6 sm:py-8 shadow-inner">
+              <div className="max-w-7xl mx-auto">
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+                  <div>
+                    <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-teal-500/20 border border-teal-300/30 text-teal-200 text-xs font-semibold mb-2">
+                      <ShieldCheck className="h-3.5 w-3.5 text-teal-300" />
+                      <span>Verified Attendant Command Center • Hubballi Zone</span>
+                    </div>
+                    <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight">
+                      Welcome back, {currentUser?.displayName || 'Sahana S.'}
+                    </h1>
+                    <p className="text-xs sm:text-sm text-teal-100/90 mt-1 max-w-2xl">
+                      Coordinate with authorized linked patients, dispatched ambulance units, and track hospital bed and ICU allocations in real-time.
+                    </p>
+                  </div>
+
+                  {/* Emergency Hotline Banner */}
+                  <div className="bg-white/10 backdrop-blur-xs border border-white/20 rounded-2xl p-3.5 flex items-center gap-3 self-start md:self-auto">
+                    <div className="h-10 w-10 rounded-xl bg-red-600 text-white flex items-center justify-center shadow-xs">
+                      <Phone className="h-5 w-5 animate-pulse" />
+                    </div>
                     <div>
-                      <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-teal-500/20 border border-teal-300/30 text-teal-200 text-xs font-semibold mb-2">
-                        <ShieldCheck className="h-3.5 w-3.5 text-teal-300" />
-                        <span>Verified Attendant Command Center • Hubballi Zone</span>
+                      <div className="text-[10px] uppercase font-bold tracking-wider text-teal-200">
+                        24/7 CareBridge Emergency Dispatch
                       </div>
-                      <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight">
-                        Welcome back, {currentUser?.displayName || currentUser?.email?.split('@')[0] || 'User'}
-                      </h1>
-                      <p className="text-xs sm:text-sm text-teal-100/90 mt-1 max-w-2xl">
-                        Coordinate with authorized linked patients, dispatched ambulance units, and track hospital bed and ICU allocations in real-time.
-                      </p>
-                    </div>
-
-                    {/* Emergency Hotline Banner */}
-                    <div className="bg-white/10 backdrop-blur-xs border border-white/20 rounded-2xl p-3.5 flex items-center gap-3 self-start md:self-auto">
-                      <div className="h-10 w-10 rounded-xl bg-red-600 text-white flex items-center justify-center shadow-xs">
-                        <Phone className="h-5 w-5 animate-pulse" />
-                      </div>
-                      <div>
-                        <div className="text-[10px] uppercase font-bold tracking-wider text-teal-200">
-                          24/7 CareBridge Emergency Dispatch
-                        </div>
-                        <div className="text-base sm:text-lg font-mono font-extrabold text-white">
-                          108 / +91 800 227 3274
-                        </div>
+                      <div className="text-base sm:text-lg font-mono font-extrabold text-white">
+                        108 / +91 800 227 3274
                       </div>
                     </div>
-                  </div>
-
-                  {/* 4 Calculated Dynamic Stat Cards */}
-                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-
-                    {/* Total Cases */}
-                    <div className="bg-white/10 backdrop-blur-md border border-white/20 rounded-2xl p-4 transition-all hover:bg-white/15">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-medium text-teal-100">Total Cases</span>
-                        <Layers className="h-4 w-4 text-teal-300" />
-                      </div>
-                      <div className="text-2xl sm:text-3xl font-extrabold mt-2 text-white">
-                        {totalCasesCount}
-                      </div>
-                      <div className="text-[11px] text-teal-200/80 mt-1 flex items-center gap-1">
-                        <span>Submitted records</span>
-                      </div>
-                    </div>
-
-                    {/* Active Cases */}
-                    <div className="bg-white/10 backdrop-blur-md border border-white/20 rounded-2xl p-4 transition-all hover:bg-white/15">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-medium text-teal-100">Active Cases</span>
-                        <span className="h-2.5 w-2.5 rounded-full bg-emerald-400 animate-ping" />
-                      </div>
-                      <div className="text-2xl sm:text-3xl font-extrabold mt-2 text-emerald-300">
-                        {activeCasesCount}
-                      </div>
-                      <div className="text-[11px] text-teal-200/80 mt-1">
-                        <span>In dispatch & clinical intake</span>
-                      </div>
-                    </div>
-
-                    {/* Completed Cases */}
-                    <div className="bg-white/10 backdrop-blur-md border border-white/20 rounded-2xl p-4 transition-all hover:bg-white/15">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-medium text-teal-100">Completed Cases</span>
-                        <CheckCheck className="h-4 w-4 text-teal-300" />
-                      </div>
-                      <div className="text-2xl sm:text-3xl font-extrabold mt-2 text-white">
-                        {completedCasesCount}
-                      </div>
-                      <div className="text-[11px] text-teal-200/80 mt-1">
-                        <span>Discharged & resolved</span>
-                      </div>
-                    </div>
-
-                    {/* Pending Resource Requests */}
-                    <div className="bg-white/10 backdrop-blur-md border border-white/20 rounded-2xl p-4 transition-all hover:bg-white/15">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-medium text-teal-100">Pending Requests</span>
-                        <Clock className="h-4 w-4 text-amber-300" />
-                      </div>
-                      <div className="text-2xl sm:text-3xl font-extrabold mt-2 text-amber-300">
-                        {pendingResourceCount}
-                      </div>
-                      <div className="text-[11px] text-teal-200/80 mt-1">
-                        <span>Active resource allocations</span>
-                      </div>
-                    </div>
-
                   </div>
                 </div>
-              </div>
 
-              {/* Quick Actions & Navigation Bar */}
-              <div className="bg-white border-b border-slate-200 px-4 sm:px-8 py-2.5 sticky top-0 z-10 shadow-2xs">
-                <div className="max-w-7xl mx-auto flex items-center justify-between gap-2 overflow-x-auto">
-                  <div className="flex items-center gap-1.5 sm:gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setDashboardTab('cases')}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors flex items-center gap-1.5 whitespace-nowrap ${dashboardTab === 'cases'
-                        ? 'bg-[#00707E] text-white shadow-2xs'
-                        : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-                        }`}
-                    >
-                      <FileText className="h-3.5 w-3.5" />
-                      <span>My Emergency Cases ({totalCasesCount})</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setDashboardTab('patients')}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors flex items-center gap-1.5 whitespace-nowrap ${dashboardTab === 'patients'
-                        ? 'bg-[#00707E] text-white shadow-2xs'
-                        : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-                        }`}
-                    >
-                      <Users className="h-3.5 w-3.5" />
-                      <span>Linked Patients ({linkedPatients.length})</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setDashboardTab('track')}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors flex items-center gap-1.5 whitespace-nowrap ${dashboardTab === 'track'
-                        ? 'bg-[#00707E] text-white shadow-2xs'
-                        : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-                        }`}
-                    >
-                      <Activity className="h-3.5 w-3.5" />
-                      <span>Track Requests</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setDashboardTab('notifications')}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors flex items-center gap-1.5 whitespace-nowrap ${dashboardTab === 'notifications'
-                        ? 'bg-[#00707E] text-white shadow-2xs'
-                        : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-                        }`}
-                    >
-                      <Bell className="h-3.5 w-3.5" />
-                      <span>Notifications</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setDashboardTab('history')}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors flex items-center gap-1.5 whitespace-nowrap ${dashboardTab === 'history'
-                        ? 'bg-[#00707E] text-white shadow-2xs'
-                        : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-                        }`}
-                    >
-                      <History className="h-3.5 w-3.5" />
-                      <span>Emergency History</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setDashboardTab('profile')}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors flex items-center gap-1.5 whitespace-nowrap ${dashboardTab === 'profile'
-                        ? 'bg-[#00707E] text-white shadow-2xs'
-                        : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-                        }`}
-                    >
-                      <Settings className="h-3.5 w-3.5" />
-                      <span>Profile Settings</span>
-                    </button>
+                {/* 4 Calculated Dynamic Stat Cards */}
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+                  
+                  {/* Total Cases */}
+                  <div className="bg-white/10 backdrop-blur-md border border-white/20 rounded-2xl p-4 transition-all hover:bg-white/15">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-medium text-teal-100">Total Cases</span>
+                      <Layers className="h-4 w-4 text-teal-300" />
+                    </div>
+                    <div className="text-2xl sm:text-3xl font-extrabold mt-2 text-white">
+                      {totalCasesCount}
+                    </div>
+                    <div className="text-[11px] text-teal-200/80 mt-1 flex items-center gap-1">
+                      <span>Submitted records</span>
+                    </div>
                   </div>
+
+                  {/* Active Cases */}
+                  <div className="bg-white/10 backdrop-blur-md border border-white/20 rounded-2xl p-4 transition-all hover:bg-white/15">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-medium text-teal-100">Active Cases</span>
+                      <span className="h-2.5 w-2.5 rounded-full bg-emerald-400 animate-ping" />
+                    </div>
+                    <div className="text-2xl sm:text-3xl font-extrabold mt-2 text-emerald-300">
+                      {activeCasesCount}
+                    </div>
+                    <div className="text-[11px] text-teal-200/80 mt-1">
+                      <span>In dispatch & clinical intake</span>
+                    </div>
+                  </div>
+
+                  {/* Completed Cases */}
+                  <div className="bg-white/10 backdrop-blur-md border border-white/20 rounded-2xl p-4 transition-all hover:bg-white/15">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-medium text-teal-100">Completed Cases</span>
+                      <CheckCheck className="h-4 w-4 text-teal-300" />
+                    </div>
+                    <div className="text-2xl sm:text-3xl font-extrabold mt-2 text-white">
+                      {completedCasesCount}
+                    </div>
+                    <div className="text-[11px] text-teal-200/80 mt-1">
+                      <span>Discharged & resolved</span>
+                    </div>
+                  </div>
+
+                  {/* Pending Resource Requests */}
+                  <div className="bg-white/10 backdrop-blur-md border border-white/20 rounded-2xl p-4 transition-all hover:bg-white/15">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-medium text-teal-100">Pending Requests</span>
+                      <Clock className="h-4 w-4 text-amber-300" />
+                    </div>
+                    <div className="text-2xl sm:text-3xl font-extrabold mt-2 text-amber-300">
+                      {pendingResourceCount}
+                    </div>
+                    <div className="text-[11px] text-teal-200/80 mt-1">
+                      <span>Active resource allocations</span>
+                    </div>
+                  </div>
+
+                </div>
+              </div>
+            </div>
+
+            {/* Quick Actions & Navigation Bar */}
+            <div className="bg-white border-b border-slate-200 px-4 sm:px-8 py-2.5 sticky top-0 z-10 shadow-2xs">
+              <div className="max-w-7xl mx-auto flex items-center justify-between gap-2 overflow-x-auto">
+                <div className="flex items-center gap-1.5 sm:gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setDashboardTab('cases')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors flex items-center gap-1.5 whitespace-nowrap ${
+                      dashboardTab === 'cases'
+                        ? 'bg-[#00707E] text-white shadow-2xs'
+                        : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                    }`}
+                  >
+                    <FileText className="h-3.5 w-3.5" />
+                    <span>My Emergency Cases ({totalCasesCount})</span>
+                  </button>
 
                   <button
                     type="button"
-                    onClick={handleCreateNewCase}
-                    className="hidden md:flex items-center gap-1 text-xs font-bold text-[#00707E] hover:text-[#005B66] hover:underline"
+                    onClick={() => setDashboardTab('patients')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors flex items-center gap-1.5 whitespace-nowrap ${
+                      dashboardTab === 'patients'
+                        ? 'bg-[#00707E] text-white shadow-2xs'
+                        : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                    }`}
                   >
-                    <PlusCircle className="h-3.5 w-3.5" />
-                    <span>+ Create Case</span>
+                    <Users className="h-3.5 w-3.5" />
+                    <span>Linked Patients ({linkedPatients.length})</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setDashboardTab('track')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors flex items-center gap-1.5 whitespace-nowrap ${
+                      dashboardTab === 'track'
+                        ? 'bg-[#00707E] text-white shadow-2xs'
+                        : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                    }`}
+                  >
+                    <Activity className="h-3.5 w-3.5" />
+                    <span>Track Requests</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setDashboardTab('notifications')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors flex items-center gap-1.5 whitespace-nowrap ${
+                      dashboardTab === 'notifications'
+                        ? 'bg-[#00707E] text-white shadow-2xs'
+                        : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                    }`}
+                  >
+                    <Bell className="h-3.5 w-3.5" />
+                    <span>Notifications</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setDashboardTab('history')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors flex items-center gap-1.5 whitespace-nowrap ${
+                      dashboardTab === 'history'
+                        ? 'bg-[#00707E] text-white shadow-2xs'
+                        : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                    }`}
+                  >
+                    <History className="h-3.5 w-3.5" />
+                    <span>Emergency History</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setDashboardTab('profile')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors flex items-center gap-1.5 whitespace-nowrap ${
+                      dashboardTab === 'profile'
+                        ? 'bg-[#00707E] text-white shadow-2xs'
+                        : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                    }`}
+                  >
+                    <Settings className="h-3.5 w-3.5" />
+                    <span>Profile Settings</span>
                   </button>
                 </div>
+
+                <button
+                  type="button"
+                  onClick={handleCreateNewCase}
+                  className="hidden md:flex items-center gap-1 text-xs font-bold text-[#00707E] hover:text-[#005B66] hover:underline"
+                >
+                  <PlusCircle className="h-3.5 w-3.5" />
+                  <span>+ Create Case</span>
+                </button>
               </div>
+            </div>
 
-              {/* Main Dashboard Content Area */}
-              <div className="flex-1 max-w-7xl mx-auto w-full p-4 sm:p-6 lg:p-8 space-y-6">
+            {/* Main Dashboard Content Area */}
+            <div className="flex-1 max-w-7xl mx-auto w-full p-4 sm:p-6 lg:p-8 space-y-6">
 
-                {/* TAB 1: MY EMERGENCY CASES & RESOURCE SUMMARY */}
-                {dashboardTab === 'cases' && (
-                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-
-                    {/* Left Column: My Emergency Cases (7 cols) */}
-                    <div className="lg:col-span-7 space-y-4">
-                      <div className="flex items-center justify-between pb-1">
-                        <div>
-                          <h2 className="text-lg sm:text-xl font-bold text-slate-900 flex items-center gap-2">
-                            <FileText className="h-5 w-5 text-[#00707E]" />
-                            <span>My Emergency Cases</span>
-                          </h2>
-                          <p className="text-xs text-slate-500">
-                            Submitted cases from this device with active triage and provider routing
-                          </p>
-                        </div>
-                        <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-slate-200 text-slate-800">
-                          {casesList.length} {casesList.length === 1 ? 'Record' : 'Records'}
-                        </span>
+              {/* TAB 1: MY EMERGENCY CASES & RESOURCE SUMMARY */}
+              {dashboardTab === 'cases' && (
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+                  
+                  {/* Left Column: My Emergency Cases (7 cols) */}
+                  <div className="lg:col-span-7 space-y-4">
+                    <div className="flex items-center justify-between pb-1">
+                      <div>
+                        <h2 className="text-lg sm:text-xl font-bold text-slate-900 flex items-center gap-2">
+                          <FileText className="h-5 w-5 text-[#00707E]" />
+                          <span>My Emergency Cases</span>
+                        </h2>
+                        <p className="text-xs text-slate-500">
+                          Submitted cases from this device with active triage and provider routing
+                        </p>
                       </div>
+                      <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-slate-200 text-slate-800">
+                        {casesList.length} {casesList.length === 1 ? 'Record' : 'Records'}
+                      </span>
+                    </div>
 
-                      {/* Case Cards List or Empty State */}
-                      {casesList.length === 0 ? (
-                        currentUser?.role === 'patient' ? (
-                          <div className="bg-white rounded-3xl p-8 sm:p-10 text-center border border-slate-200 shadow-xs">
-                            <div className="h-16 w-16 mx-auto mb-4 rounded-2xl bg-teal-50 border border-teal-200 text-teal-700 flex items-center justify-center">
-                              <Activity className="h-8 w-8 text-[#00707E]" />
-                            </div>
-                            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-teal-50 border border-teal-200 text-teal-800 text-xs font-semibold mb-3">
-                              <User className="h-3.5 w-3.5 text-teal-600" />
-                              <span>Patient Emergency Portal</span>
-                            </div>
-                            <h3 className="text-lg sm:text-xl font-extrabold text-slate-900">
-                              No Active Emergency Requests
-                            </h3>
-                            <p className="text-xs sm:text-sm text-slate-600 mt-2 max-w-md mx-auto leading-relaxed">
-                              Welcome, <span className="font-semibold text-slate-900">{currentUser?.displayName || 'Patient'}</span>. You currently have no active emergency cases. If you require immediate emergency healthcare resources (hospital bed, ICU, oxygen, blood, doctor, or ambulance dispatch), submit an emergency request now.
-                            </p>
-                            <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
-                              <button
-                                type="button"
-                                onClick={handleCreateNewCase}
-                                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-xs sm:text-sm shadow-sm transition-all active:scale-[0.98]"
-                              >
-                                <PlusCircle className="h-4 w-4" />
-                                <span>+ Create Emergency Request</span>
-                              </button>
-                            </div>
-                            <div className="mt-8 pt-6 border-t border-slate-100 grid grid-cols-1 sm:grid-cols-3 gap-3 text-left">
-                              <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 text-xs">
-                                <div className="font-bold text-slate-900 mb-1">1. Fast Intake</div>
-                                <p className="text-slate-500 text-[11px]">Your profile and contact info are auto-retrieved.</p>
-                              </div>
-                              <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 text-xs">
-                                <div className="font-bold text-slate-900 mb-1">2. Multi-Resource</div>
-                                <p className="text-slate-500 text-[11px]">Bed, ICU, blood, oxygen, and ambulance coordinated.</p>
-                              </div>
-                              <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 text-xs">
-                                <div className="font-bold text-slate-900 mb-1">3. Live Tracking</div>
-                                <p className="text-slate-500 text-[11px]">Track real-time provider statuses and updates.</p>
-                              </div>
-                            </div>
+                    {/* Case Cards List or Empty State */}
+                    {casesList.length === 0 ? (
+                      currentUser?.role === 'patient' ? (
+                        <div className="bg-white rounded-3xl p-8 sm:p-10 text-center border border-slate-200 shadow-xs">
+                          <div className="h-16 w-16 mx-auto mb-4 rounded-2xl bg-teal-50 border border-teal-200 text-teal-700 flex items-center justify-center">
+                            <Activity className="h-8 w-8 text-[#00707E]" />
                           </div>
-                        ) : linkedPatients.length === 0 ? (
-                          <div className="bg-white rounded-3xl p-8 sm:p-10 text-center border border-slate-200 shadow-xs">
-                            <div className="h-16 w-16 mx-auto mb-4 rounded-2xl bg-teal-50 border border-teal-200 text-teal-700 flex items-center justify-center">
-                              <Users className="h-8 w-8" />
-                            </div>
-                            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-teal-50 border border-teal-200 text-teal-800 text-xs font-semibold mb-3">
-                              <User className="h-3.5 w-3.5 text-teal-600" />
-                              <span>Patient Attendant Command</span>
-                            </div>
-                            <h3 className="text-lg sm:text-xl font-extrabold text-slate-900">
-                              No Patients Linked to Your Account
-                            </h3>
-                            <p className="text-xs sm:text-sm text-slate-600 mt-2 max-w-md mx-auto leading-relaxed">
-                              Welcome, <span className="font-semibold text-slate-900">{currentUser?.displayName || 'Attendant'}</span>. As an authorized Patient Attendant, please register or link the patient you assist with verified consent to begin emergency resource coordination.
-                            </p>
-                            <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
-                              <button
-                                type="button"
-                                onClick={() => setIsLinkPatientModalOpen(true)}
-                                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#00707E] hover:bg-[#005B66] text-white font-bold text-xs sm:text-sm shadow-sm transition-all active:scale-[0.98]"
-                              >
-                                <UserPlus className="h-4 w-4" />
-                                <span>+ Register / Link Patient</span>
-                              </button>
-                            </div>
-                            <div className="mt-8 pt-6 border-t border-slate-100 grid grid-cols-1 sm:grid-cols-3 gap-3 text-left">
-                              <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 text-xs">
-                                <div className="font-bold text-slate-900 mb-1">1. Link Patient</div>
-                                <p className="text-slate-500 text-[11px]">Add dependent or family member with consent.</p>
-                              </div>
-                              <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 text-xs">
-                                <div className="font-bold text-slate-900 mb-1">2. Request Care</div>
-                                <p className="text-slate-500 text-[11px]">Instant bed, ICU, blood, O2 & ambulance dispatch.</p>
-                              </div>
-                              <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 text-xs">
-                                <div className="font-bold text-slate-900 mb-1">3. Live Tracking</div>
-                                <p className="text-slate-500 text-[11px]">Track responder updates in real time.</p>
-                              </div>
-                            </div>
+                          <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-teal-50 border border-teal-200 text-teal-800 text-xs font-semibold mb-3">
+                            <User className="h-3.5 w-3.5 text-teal-600" />
+                            <span>Patient Emergency Portal</span>
                           </div>
-                        ) : (
-                          <div className="bg-white rounded-2xl p-8 sm:p-12 text-center border border-slate-200 shadow-xs">
-                            <div className="h-16 w-16 mx-auto mb-4 rounded-full bg-slate-100 text-slate-400 flex items-center justify-center">
-                              <FileText className="h-8 w-8 text-[#00707E]" />
-                            </div>
-                            <h3 className="text-base font-bold text-slate-800">No Active Emergency Cases for Linked Patients</h3>
-                            <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
-                              You have {linkedPatients.length} linked patient(s) with authorized relationship. When an emergency arises, create an emergency case to allocate hospital beds, ICU facilities, blood, oxygen, and ambulances.
-                            </p>
-                            <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
-                              <button
-                                type="button"
-                                onClick={handleCreateNewCase}
-                                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-xs shadow-sm transition-colors"
-                              >
-                                <PlusCircle className="h-4 w-4" />
-                                <span>+ Create New Emergency Case</span>
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setIsLinkPatientModalOpen(true)}
-                                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs transition-colors"
-                              >
-                                <UserPlus className="h-4 w-4" />
-                                <span>Link Another Patient</span>
-                              </button>
-                            </div>
-                          </div>
-                        )
-                      ) : (
-                        <div className="space-y-3.5">
-                          {casesList.map((c) => (
-                            <div
-                              key={c.caseId}
-                              className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200 shadow-xs hover:border-teal-300 transition-all group"
+                          <h3 className="text-lg sm:text-xl font-extrabold text-slate-900">
+                            No Active Emergency Requests
+                          </h3>
+                          <p className="text-xs sm:text-sm text-slate-600 mt-2 max-w-md mx-auto leading-relaxed">
+                            Welcome, <span className="font-semibold text-slate-900">{currentUser?.displayName || 'Patient'}</span>. You currently have no active emergency cases. If you require immediate emergency healthcare resources (hospital bed, ICU, oxygen, blood, doctor, or ambulance dispatch), submit an emergency request now.
+                          </p>
+                          <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+                            <button
+                              type="button"
+                              onClick={handleCreateNewCase}
+                              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-xs sm:text-sm shadow-sm transition-all active:scale-[0.98]"
                             >
-                              {/* Card Top: Case ID, Status, Timestamp */}
-                              <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-100">
-                                <div className="flex items-center gap-2">
-                                  <span className="font-mono text-xs sm:text-sm font-extrabold text-[#0F3868] bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
-                                    {c.caseId}
-                                  </span>
-                                  <button
-                                    type="button"
-                                    onClick={() => copyCaseId(c.caseId)}
-                                    className="text-slate-400 hover:text-slate-600 p-1 rounded hover:bg-slate-50"
-                                    title="Copy Case ID"
-                                  >
-                                    <Copy className="h-3.5 w-3.5" />
-                                  </button>
-                                  <span className="text-[11px] text-slate-400 font-medium">
-                                    {c.dateStr} • {c.createdAt}
-                                  </span>
-                                </div>
+                              <PlusCircle className="h-4 w-4" />
+                              <span>+ Create Emergency Request</span>
+                            </button>
+                          </div>
+                          <div className="mt-8 pt-6 border-t border-slate-100 grid grid-cols-1 sm:grid-cols-3 gap-3 text-left">
+                            <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 text-xs">
+                              <div className="font-bold text-slate-900 mb-1">1. Fast Intake</div>
+                              <p className="text-slate-500 text-[11px]">Your profile and contact info are auto-retrieved.</p>
+                            </div>
+                            <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 text-xs">
+                              <div className="font-bold text-slate-900 mb-1">2. Multi-Resource</div>
+                              <p className="text-slate-500 text-[11px]">Bed, ICU, blood, oxygen, and ambulance coordinated.</p>
+                            </div>
+                            <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 text-xs">
+                              <div className="font-bold text-slate-900 mb-1">3. Live Tracking</div>
+                              <p className="text-slate-500 text-[11px]">Track real-time provider statuses and updates.</p>
+                            </div>
+                          </div>
+                        </div>
+                      ) : linkedPatients.length === 0 ? (
+                        <div className="bg-white rounded-3xl p-8 sm:p-10 text-center border border-slate-200 shadow-xs">
+                          <div className="h-16 w-16 mx-auto mb-4 rounded-2xl bg-teal-50 border border-teal-200 text-teal-700 flex items-center justify-center">
+                            <Users className="h-8 w-8" />
+                          </div>
+                          <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-teal-50 border border-teal-200 text-teal-800 text-xs font-semibold mb-3">
+                            <User className="h-3.5 w-3.5 text-teal-600" />
+                            <span>Patient Attendant Command</span>
+                          </div>
+                          <h3 className="text-lg sm:text-xl font-extrabold text-slate-900">
+                            No Patients Linked to Your Account
+                          </h3>
+                          <p className="text-xs sm:text-sm text-slate-600 mt-2 max-w-md mx-auto leading-relaxed">
+                            Welcome, <span className="font-semibold text-slate-900">{currentUser?.displayName || 'Attendant'}</span>. As an authorized Patient Attendant, please register or link the patient you assist with verified consent to begin emergency resource coordination.
+                          </p>
+                          <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+                            <button
+                              type="button"
+                              onClick={() => setIsLinkPatientModalOpen(true)}
+                              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#00707E] hover:bg-[#005B66] text-white font-bold text-xs sm:text-sm shadow-sm transition-all active:scale-[0.98]"
+                            >
+                              <UserPlus className="h-4 w-4" />
+                              <span>+ Register / Link Patient</span>
+                            </button>
+                          </div>
+                          <div className="mt-8 pt-6 border-t border-slate-100 grid grid-cols-1 sm:grid-cols-3 gap-3 text-left">
+                            <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 text-xs">
+                              <div className="font-bold text-slate-900 mb-1">1. Link Patient</div>
+                              <p className="text-slate-500 text-[11px]">Add dependent or family member with consent.</p>
+                            </div>
+                            <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 text-xs">
+                              <div className="font-bold text-slate-900 mb-1">2. Request Care</div>
+                              <p className="text-slate-500 text-[11px]">Instant bed, ICU, blood, O2 & ambulance dispatch.</p>
+                            </div>
+                            <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 text-xs">
+                              <div className="font-bold text-slate-900 mb-1">3. Live Tracking</div>
+                              <p className="text-slate-500 text-[11px]">Track responder updates in real time.</p>
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="bg-white rounded-2xl p-8 sm:p-12 text-center border border-slate-200 shadow-xs">
+                          <div className="h-16 w-16 mx-auto mb-4 rounded-full bg-slate-100 text-slate-400 flex items-center justify-center">
+                            <FileText className="h-8 w-8 text-[#00707E]" />
+                          </div>
+                          <h3 className="text-base font-bold text-slate-800">No Active Emergency Cases for Linked Patients</h3>
+                          <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
+                            You have {linkedPatients.length} linked patient(s) with authorized relationship. When an emergency arises, create an emergency case to allocate hospital beds, ICU facilities, blood, oxygen, and ambulances.
+                          </p>
+                          <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
+                            <button
+                              type="button"
+                              onClick={handleCreateNewCase}
+                              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-xs shadow-sm transition-colors"
+                            >
+                              <PlusCircle className="h-4 w-4" />
+                              <span>+ Create New Emergency Case</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setIsLinkPatientModalOpen(true)}
+                              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs transition-colors"
+                            >
+                              <UserPlus className="h-4 w-4" />
+                              <span>Link Another Patient</span>
+                            </button>
+                          </div>
+                        </div>
+                      )
+                    ) : (
+                      <div className="space-y-3.5">
+                        {casesList.map((c) => (
+                          <div
+                            key={c.caseId}
+                            className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200 shadow-xs hover:border-teal-300 transition-all group"
+                          >
+                            {/* Card Top: Case ID, Status, Timestamp */}
+                            <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-100">
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono text-xs sm:text-sm font-extrabold text-[#0F3868] bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
+                                  {c.caseId}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => copyCaseId(c.caseId)}
+                                  className="text-slate-400 hover:text-slate-600 p-1 rounded hover:bg-slate-50"
+                                  title="Copy Case ID"
+                                >
+                                  <Copy className="h-3.5 w-3.5" />
+                                </button>
+                                <span className="text-[11px] text-slate-400 font-medium">
+                                  {c.dateStr} • {c.createdAt}
+                                </span>
+                              </div>
 
+                              <div className="flex items-center gap-2">
+                                {c.status === 'Completed' ? (
+                                  <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-slate-100 text-slate-700 border border-slate-300 flex items-center gap-1">
+                                    <CheckCheck className="h-3 w-3 text-emerald-600" />
+                                    Completed
+                                  </span>
+                                ) : (
+                                  <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-teal-50 text-teal-800 border border-teal-200 flex items-center gap-1">
+                                    <span className="h-1.5 w-1.5 rounded-full bg-teal-600 animate-ping" />
+                                    Active Dispatch
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Card Body: Patient Name, Triage, Condition */}
+                            <div className="pt-3 pb-3 space-y-2">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
                                 <div className="flex items-center gap-2">
-                                  {c.status === 'Completed' ? (
-                                    <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-slate-100 text-slate-700 border border-slate-300 flex items-center gap-1">
-                                      <CheckCheck className="h-3 w-3 text-emerald-600" />
-                                      Completed
-                                    </span>
-                                  ) : (
-                                    <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-teal-50 text-teal-800 border border-teal-200 flex items-center gap-1">
-                                      <span className="h-1.5 w-1.5 rounded-full bg-teal-600 animate-ping" />
-                                      Active Dispatch
+                                  <h3 className="font-extrabold text-slate-900 text-base">
+                                    {c.patientName}
+                                  </h3>
+                                  <span className="text-xs text-slate-500 font-medium">
+                                    ({c.patientAge}y • {c.patientGender})
+                                  </span>
+                                  {c.patientBloodGroup && c.patientBloodGroup !== 'Unknown' && (
+                                    <span className="px-2 py-0.5 rounded font-bold text-xs bg-red-50 text-red-700 border border-red-200">
+                                      {c.patientBloodGroup}
                                     </span>
                                   )}
                                 </div>
+                                {getTriageBadge(c.triagePriority)}
                               </div>
 
-                              {/* Card Body: Patient Name, Triage, Condition */}
-                              <div className="pt-3 pb-3 space-y-2">
-                                <div className="flex flex-wrap items-center justify-between gap-2">
-                                  <div className="flex items-center gap-2">
-                                    <h3 className="font-extrabold text-slate-900 text-base">
-                                      {c.patientName}
-                                    </h3>
-                                    <span className="text-xs text-slate-500 font-medium">
-                                      ({c.patientAge}y • {c.patientGender})
-                                    </span>
-                                    {c.patientBloodGroup && c.patientBloodGroup !== 'Unknown' && (
-                                      <span className="px-2 py-0.5 rounded font-bold text-xs bg-red-50 text-red-700 border border-red-200">
-                                        {c.patientBloodGroup}
-                                      </span>
-                                    )}
-                                  </div>
-                                  {getTriageBadge(c.triagePriority)}
-                                </div>
-
-                                <div className="text-xs text-slate-700 bg-slate-50 rounded-xl p-2.5 border border-slate-100">
-                                  <span className="font-bold text-slate-900">Condition: </span>
-                                  <span>{c.patientCondition}</span>
-                                </div>
-
-                                <div className="text-xs text-slate-500 flex flex-wrap items-center gap-x-3 gap-y-1">
-                                  <span className="flex items-center gap-1 text-slate-600">
-                                    <Building2 className="h-3.5 w-3.5 text-[#00707E]" />
-                                    <span className="font-semibold">{c.providerName}</span>
-                                  </span>
-                                  <span>•</span>
-                                  <span className="flex items-center gap-1">
-                                    <User className="h-3.5 w-3.5 text-slate-400" />
-                                    <span>Attendant: {c.attendantName} ({c.attendantRelation})</span>
-                                  </span>
-                                </div>
+                              <div className="text-xs text-slate-700 bg-slate-50 rounded-xl p-2.5 border border-slate-100">
+                                <span className="font-bold text-slate-900">Condition: </span>
+                                <span>{c.patientCondition}</span>
                               </div>
 
-                              {/* Card Footer: Resources Requested + View Details Action */}
-                              <div className="pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2">
-                                <div className="flex flex-wrap items-center gap-1">
-                                  {c.resourcesList?.map((res) => (
-                                    <span
-                                      key={res}
-                                      className="px-2 py-0.5 rounded text-[10px] font-semibold bg-blue-50 text-blue-800 border border-blue-200"
-                                    >
-                                      {res}
-                                    </span>
-                                  ))}
-                                </div>
-
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setSelectedCaseFromHistory(false);
-                                    setSelectedDashboardCase(c);
-                                  }}
-                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-[#00707E] hover:text-white text-slate-800 text-xs font-bold transition-all"
-                                >
-                                  <Eye className="h-3.5 w-3.5" />
-                                  <span>View Case Details</span>
-                                  <ChevronRight className="h-3.5 w-3.5" />
-                                </button>
+                              <div className="text-xs text-slate-500 flex flex-wrap items-center gap-x-3 gap-y-1">
+                                <span className="flex items-center gap-1 text-slate-600">
+                                  <Building2 className="h-3.5 w-3.5 text-[#00707E]" />
+                                  <span className="font-semibold">{c.providerName}</span>
+                                </span>
+                                <span>•</span>
+                                <span className="flex items-center gap-1">
+                                  <User className="h-3.5 w-3.5 text-slate-400" />
+                                  <span>Attendant: {c.attendantName} ({c.attendantRelation})</span>
+                                </span>
                               </div>
                             </div>
-                          ))}
-                        </div>
-                      )}
+
+                            {/* Card Footer: Resources Requested + View Details Action */}
+                            <div className="pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2">
+                              <div className="flex flex-wrap items-center gap-1">
+                                {c.resourcesList?.map((res) => (
+                                  <span
+                                    key={res}
+                                    className="px-2 py-0.5 rounded text-[10px] font-semibold bg-blue-50 text-blue-800 border border-blue-200"
+                                  >
+                                    {res}
+                                  </span>
+                                ))}
+                              </div>
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSelectedCaseFromHistory(false);
+                                  setSelectedDashboardCase(c);
+                                }}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-[#00707E] hover:text-white text-slate-800 text-xs font-bold transition-all"
+                              >
+                                <Eye className="h-3.5 w-3.5" />
+                                <span>View Case Details</span>
+                                <ChevronRight className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Right Column: Resource Request Summary (5 cols) */}
+                  <div className="lg:col-span-5 space-y-4">
+                    <div className="pb-1">
+                      <h2 className="text-lg sm:text-xl font-bold text-slate-900 flex items-center gap-2">
+                        <Activity className="h-5 w-5 text-[#00707E]" />
+                        <span>Resource Request Summary</span>
+                      </h2>
+                      <p className="text-xs text-slate-500">
+                        Live status for all 5 emergency resource categories
+                      </p>
                     </div>
 
-                    {/* Right Column: Resource Request Summary (5 cols) */}
-                    <div className="lg:col-span-5 space-y-4">
-                      <div className="pb-1">
-                        <h2 className="text-lg sm:text-xl font-bold text-slate-900 flex items-center gap-2">
-                          <Activity className="h-5 w-5 text-[#00707E]" />
-                          <span>Resource Request Summary</span>
-                        </h2>
-                        <p className="text-xs text-slate-500">
-                          Live status for all 5 emergency resource categories
-                        </p>
-                      </div>
-
-                      {/* Dynamic Emergency Resource Category Status Cards */}
-                      <div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200 shadow-xs space-y-3.5">
-
-                        {primaryActiveCase ? (
-                          <>
-                            {/* Active Case Header for context */}
-                            <div className="bg-teal-50/70 border border-teal-200 rounded-xl p-3 flex items-center justify-between text-xs">
-                              <div>
-                                <span className="text-[10px] uppercase font-bold text-teal-800 tracking-wider block">
-                                  Tracking Case
-                                </span>
-                                <span className="font-mono font-bold text-[#0F3868]">
-                                  {primaryActiveCase.caseId} • {primaryActiveCase.patientName}
-                                </span>
-                              </div>
-                              <button
-                                type="button"
-                                onClick={() => setSelectedDashboardCase(primaryActiveCase)}
-                                className="text-xs font-semibold text-[#00707E] hover:underline"
-                              >
-                                Details →
-                              </button>
+                    {/* Dynamic Emergency Resource Category Status Cards */}
+                    <div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200 shadow-xs space-y-3.5">
+                      
+                      {primaryActiveCase ? (
+                        <>
+                          {/* Active Case Header for context */}
+                          <div className="bg-teal-50/70 border border-teal-200 rounded-xl p-3 flex items-center justify-between text-xs">
+                            <div>
+                              <span className="text-[10px] uppercase font-bold text-teal-800 tracking-wider block">
+                                Tracking Case
+                              </span>
+                              <span className="font-mono font-bold text-[#0F3868]">
+                                {primaryActiveCase.caseId} • {primaryActiveCase.patientName}
+                              </span>
                             </div>
-                            {/* Dynamic resource statuses from active case */}
-                            {primaryActiveCase.individualStatuses && primaryActiveCase.individualStatuses.length > 0 ? (
-                              primaryActiveCase.individualStatuses.map((item) => {
-                                const isBed = item.resource.toLowerCase().includes('bed');
-                                const isIcu = item.resource.toLowerCase().includes('icu');
-                                const isBlood = item.resource.toLowerCase().includes('blood');
-                                const isOxygen = item.resource.toLowerCase().includes('oxygen');
-                                const isAmb = item.resource.toLowerCase().includes('ambulance');
-
-                                const badgeColor = isBlood
-                                  ? 'bg-red-100 text-red-800'
-                                  : isOxygen
-                                    ? 'bg-sky-100 text-sky-800'
-                                    : isAmb
-                                      ? 'bg-emerald-100 text-emerald-800'
-                                      : isIcu
-                                        ? 'bg-teal-100 text-teal-800'
-                                        : 'bg-amber-100 text-amber-800';
-
-                                const tagAbbr = isBlood ? 'BLD' : isOxygen ? 'O2' : isAmb ? 'AMB' : isIcu ? 'ICU' : 'BED';
-
-                                return (
-                                  <div
-                                    key={item.resource}
-                                    className="p-3 rounded-xl border border-slate-100 bg-slate-50/80 hover:bg-white hover:border-teal-200 transition-colors"
-                                  >
-                                    <div className="flex items-start justify-between gap-2">
-                                      <div className="flex items-center gap-2">
-                                        <div className={`h-8 w-8 rounded-lg ${badgeColor} flex items-center justify-center font-bold text-xs`}>
-                                          {tagAbbr}
-                                        </div>
-                                        <div>
-                                          <h4 className="text-xs font-bold text-slate-900">{item.resource}</h4>
-                                          <p className="text-[11px] text-slate-500">{primaryActiveCase.providerName}</p>
-                                        </div>
-                                      </div>
-                                      <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-teal-50 text-teal-800 border border-teal-200">
-                                        {item.status}
-                                      </span>
-                                    </div>
-                                    <p className="text-[11px] text-slate-600 mt-2 pl-10 border-l-2 border-teal-500">
-                                      {item.detail}
-                                    </p>
-                                  </div>
-                                );
-                              })
-                            ) : (
-                              <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-600">
-                                Resources requested: {primaryActiveCase.resourcesList?.join(', ') || 'Emergency assistance'}. Awaiting provider assignment.
-                              </div>
-                            )}
-                          </>
-                        ) : (
-                          <div className="text-center py-8 px-4 border border-dashed border-slate-200 rounded-xl bg-slate-50/60">
-                            <div className="h-10 w-10 rounded-xl bg-teal-50 border border-teal-200 text-[#00707E] flex items-center justify-center mx-auto mb-2">
-                              <Activity className="h-5 w-5" />
-                            </div>
-                            <h4 className="text-xs font-bold text-slate-800">No Active Resource Requests</h4>
-                            <p className="text-[11px] text-slate-500 mt-1 max-w-xs mx-auto">
-                              When an emergency case is initiated, live dispatch status for beds, ICU, blood units, oxygen supply, and ambulance fleets will update here in real time.
-                            </p>
-                            {linkedPatients.length > 0 ? (
-                              <button
-                                type="button"
-                                onClick={handleCreateNewCase}
-                                className="mt-3 inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-[#00707E] hover:bg-[#005B66] text-white text-xs font-bold shadow-2xs transition-colors"
-                              >
-                                <PlusCircle className="h-3.5 w-3.5" />
-                                <span>Create Emergency Case</span>
-                              </button>
-                            ) : (
-                              <button
-                                type="button"
-                                onClick={() => setIsLinkPatientModalOpen(true)}
-                                className="mt-3 inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-[#00707E] hover:bg-[#005B66] text-white text-xs font-bold shadow-2xs transition-colors"
-                              >
-                                <UserPlus className="h-3.5 w-3.5" />
-                                <span>Link a Patient</span>
-                              </button>
-                            )}
+                            <button
+                              type="button"
+                              onClick={() => setSelectedDashboardCase(primaryActiveCase)}
+                              className="text-xs font-semibold text-[#00707E] hover:underline"
+                            >
+                              Details →
+                            </button>
                           </div>
-                        )}
+                          {/* Dynamic resource statuses from active case */}
+                          {primaryActiveCase.individualStatuses && primaryActiveCase.individualStatuses.length > 0 ? (
+                            primaryActiveCase.individualStatuses.map((item) => {
+                              const isBed = item.resource.toLowerCase().includes('bed');
+                              const isIcu = item.resource.toLowerCase().includes('icu');
+                              const isBlood = item.resource.toLowerCase().includes('blood');
+                              const isOxygen = item.resource.toLowerCase().includes('oxygen');
+                              const isAmb = item.resource.toLowerCase().includes('ambulance');
 
-                      </div>
+                              const badgeColor = isBlood
+                                ? 'bg-red-100 text-red-800'
+                                : isOxygen
+                                ? 'bg-sky-100 text-sky-800'
+                                : isAmb
+                                ? 'bg-emerald-100 text-emerald-800'
+                                : isIcu
+                                ? 'bg-teal-100 text-teal-800'
+                                : 'bg-amber-100 text-amber-800';
 
-                      {/* Quick Call Assistance Card */}
-                      <div className="bg-gradient-to-br from-[#0F3868] to-[#00707E] text-white rounded-2xl p-4 shadow-sm flex items-center justify-between">
-                        <div>
-                          <h4 className="text-xs font-bold uppercase tracking-wider text-teal-200">Need Immediate Help?</h4>
-                          <p className="text-xs text-white/90 mt-0.5">Direct triage support with hub coordinator</p>
+                              const tagAbbr = isBlood ? 'BLD' : isOxygen ? 'O2' : isAmb ? 'AMB' : isIcu ? 'ICU' : 'BED';
+
+                              return (
+                                <div
+                                  key={item.resource}
+                                  className="p-3 rounded-xl border border-slate-100 bg-slate-50/80 hover:bg-white hover:border-teal-200 transition-colors"
+                                >
+                                  <div className="flex items-start justify-between gap-2">
+                                    <div className="flex items-center gap-2">
+                                      <div className={`h-8 w-8 rounded-lg ${badgeColor} flex items-center justify-center font-bold text-xs`}>
+                                        {tagAbbr}
+                                      </div>
+                                      <div>
+                                        <h4 className="text-xs font-bold text-slate-900">{item.resource}</h4>
+                                        <p className="text-[11px] text-slate-500">{primaryActiveCase.providerName}</p>
+                                      </div>
+                                    </div>
+                                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-teal-50 text-teal-800 border border-teal-200">
+                                      {item.status}
+                                    </span>
+                                  </div>
+                                  <p className="text-[11px] text-slate-600 mt-2 pl-10 border-l-2 border-teal-500">
+                                    {item.detail}
+                                  </p>
+                                </div>
+                              );
+                            })
+                          ) : (
+                            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-600">
+                              Resources requested: {primaryActiveCase.resourcesList?.join(', ') || 'Emergency assistance'}. Awaiting provider assignment.
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <div className="text-center py-8 px-4 border border-dashed border-slate-200 rounded-xl bg-slate-50/60">
+                          <div className="h-10 w-10 rounded-xl bg-teal-50 border border-teal-200 text-[#00707E] flex items-center justify-center mx-auto mb-2">
+                            <Activity className="h-5 w-5" />
+                          </div>
+                          <h4 className="text-xs font-bold text-slate-800">No Active Resource Requests</h4>
+                          <p className="text-[11px] text-slate-500 mt-1 max-w-xs mx-auto">
+                            When an emergency case is initiated, live dispatch status for beds, ICU, blood units, oxygen supply, and ambulance fleets will update here in real time.
+                          </p>
+                          {linkedPatients.length > 0 ? (
+                            <button
+                              type="button"
+                              onClick={handleCreateNewCase}
+                              className="mt-3 inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-[#00707E] hover:bg-[#005B66] text-white text-xs font-bold shadow-2xs transition-colors"
+                            >
+                              <PlusCircle className="h-3.5 w-3.5" />
+                              <span>Create Emergency Case</span>
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setIsLinkPatientModalOpen(true)}
+                              className="mt-3 inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-[#00707E] hover:bg-[#005B66] text-white text-xs font-bold shadow-2xs transition-colors"
+                            >
+                              <UserPlus className="h-3.5 w-3.5" />
+                              <span>Link a Patient</span>
+                            </button>
+                          )}
                         </div>
-                        <a
-                          href="tel:108"
-                          className="px-3.5 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-xs flex items-center gap-1.5 transition-colors shadow-xs"
-                        >
-                          <Phone className="h-3.5 w-3.5" />
-                          <span>Call 108</span>
-                        </a>
-                      </div>
+                      )}
 
+                    </div>
+
+                    {/* Quick Call Assistance Card */}
+                    <div className="bg-gradient-to-br from-[#0F3868] to-[#00707E] text-white rounded-2xl p-4 shadow-sm flex items-center justify-between">
+                      <div>
+                        <h4 className="text-xs font-bold uppercase tracking-wider text-teal-200">Need Immediate Help?</h4>
+                        <p className="text-xs text-white/90 mt-0.5">Direct triage support with hub coordinator</p>
+                      </div>
+                      <a
+                        href="tel:108"
+                        className="px-3.5 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-xs flex items-center gap-1.5 transition-colors shadow-xs"
+                      >
+                        <Phone className="h-3.5 w-3.5" />
+                        <span>Call 108</span>
+                      </a>
                     </div>
 
                   </div>
-                )}
 
-                {/* TAB: LINKED PATIENTS */}
-                {dashboardTab === 'patients' && (
-                  <div className="bg-white rounded-3xl p-6 sm:p-8 border border-slate-200 shadow-xs space-y-6">
-                    <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-100 pb-4">
-                      <div>
-                        <h2 className="text-xl font-bold text-slate-900 flex items-center gap-2">
-                          <Users className="h-5 w-5 text-[#00707E]" />
-                          <span>Authorized Linked Patients</span>
-                        </h2>
-                        <p className="text-xs text-slate-500 mt-0.5">
-                          Family members and patients authorized under your attendant profile ({currentUser?.displayName || currentUser?.email || 'Your Profile'})
-                        </p>
+                </div>
+              )}
+
+              {/* TAB: LINKED PATIENTS */}
+              {dashboardTab === 'patients' && (
+                <div className="bg-white rounded-3xl p-6 sm:p-8 border border-slate-200 shadow-xs space-y-6">
+                  <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-100 pb-4">
+                    <div>
+                      <h2 className="text-xl font-bold text-slate-900 flex items-center gap-2">
+                        <Users className="h-5 w-5 text-[#00707E]" />
+                        <span>Authorized Linked Patients</span>
+                      </h2>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        Family members and patients authorized under your attendant profile ({currentUser?.displayName || 'Sahana S.'})
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setIsLinkPatientModalOpen(true)}
+                      className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-[#00707E] hover:bg-[#005B66] text-white font-bold text-xs shadow-sm transition-all"
+                    >
+                      <UserPlus className="h-4 w-4" />
+                      <span>+ Register / Link Patient</span>
+                    </button>
+                  </div>
+
+                  {linkedPatients.length === 0 ? (
+                    <div className="text-center py-12 px-4 max-w-md mx-auto">
+                      <div className="h-14 w-14 rounded-2xl bg-teal-50 border border-teal-200 text-teal-700 flex items-center justify-center mx-auto mb-3">
+                        <Users className="h-7 w-7" />
                       </div>
+                      <h3 className="font-bold text-slate-900 text-base">No Patients Linked Yet</h3>
+                      <p className="text-xs text-slate-500 mt-1 mb-5">
+                        You currently have no patients associated with your account. Link a patient or family member to initiate emergency bed reservations, oxygen requests, and ambulance dispatch.
+                      </p>
                       <button
                         type="button"
                         onClick={() => setIsLinkPatientModalOpen(true)}
-                        className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-[#00707E] hover:bg-[#005B66] text-white font-bold text-xs shadow-sm transition-all"
+                        className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#00707E] hover:bg-[#005B66] text-white font-bold text-xs shadow-sm transition-all"
                       >
                         <UserPlus className="h-4 w-4" />
-                        <span>+ Register / Link Patient</span>
+                        <span>Link Patient Now</span>
                       </button>
                     </div>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {linkedPatients.map((patient) => (
+                        <div
+                          key={patient.id}
+                          className="p-5 rounded-2xl border border-slate-200 bg-slate-50 hover:bg-white hover:border-teal-300 transition-all shadow-xs flex flex-col justify-between"
+                        >
+                          <div>
+                            <div className="flex items-start justify-between gap-2 pb-3 border-b border-slate-200">
+                              <div className="flex items-center gap-3">
+                                <div className="h-10 w-10 rounded-xl bg-teal-100 text-teal-800 font-extrabold flex items-center justify-center text-sm">
+                                  {patient.patientName.charAt(0)}
+                                </div>
+                                <div>
+                                  <h3 className="font-extrabold text-slate-900 text-base">{patient.patientName}</h3>
+                                  <p className="text-xs text-slate-500 font-medium">
+                                    {patient.relationship} • {patient.patientAge} years • {patient.patientGender}
+                                  </p>
+                                </div>
+                              </div>
+                              {patient.patientBloodGroup && patient.patientBloodGroup !== 'Unknown' && (
+                                <span className="px-2.5 py-1 rounded-lg text-xs font-bold bg-red-50 text-red-700 border border-red-200">
+                                  {patient.patientBloodGroup}
+                                </span>
+                              )}
+                            </div>
 
-                    {linkedPatients.length === 0 ? (
-                      <div className="text-center py-12 px-4 max-w-md mx-auto">
-                        <div className="h-14 w-14 rounded-2xl bg-teal-50 border border-teal-200 text-teal-700 flex items-center justify-center mx-auto mb-3">
-                          <Users className="h-7 w-7" />
+                            <div className="py-3 space-y-2 text-xs">
+                              <div className="flex items-center justify-between text-slate-600">
+                                <span className="font-medium text-slate-500">Emergency Phone:</span>
+                                <span className="font-semibold text-slate-900">{patient.emergencyContactPhone || 'Not specified'}</span>
+                              </div>
+                              <div className="flex items-center justify-between text-slate-600">
+                                <span className="font-medium text-slate-500">Patient Consent:</span>
+                                <span className="inline-flex items-center gap-1 font-bold text-[11px] text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                                  <ShieldCheck className="h-3 w-3 text-emerald-600" />
+                                  <span>Verified & Active</span>
+                                </span>
+                              </div>
+                              {patient.medicalNotes && (
+                                <div className="bg-white p-2.5 rounded-xl border border-slate-200/80 text-slate-700">
+                                  <span className="font-bold text-slate-900 block mb-0.5">Known Medical Notes / Allergies:</span>
+                                  <span>{patient.medicalNotes}</span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="pt-3 border-t border-slate-200 flex items-center justify-between gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setPatientName(patient.patientName);
+                                setPatientAge(String(patient.patientAge));
+                                setPatientGender(patient.patientGender);
+                                setPatientBloodGroup(patient.patientBloodGroup || 'Unknown');
+                                setAttendantRelation(patient.relationship || 'Guardian');
+                                if (patient.emergencyContactPhone) setAttendantPhone(patient.emergencyContactPhone);
+                                if (patient.medicalNotes) setPatientCondition(patient.medicalNotes);
+                                setCurrentScreen('selection');
+                              }}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#00707E] hover:bg-[#005B66] text-white text-xs font-bold transition-all shadow-2xs"
+                            >
+                              <PlusCircle className="h-3.5 w-3.5" />
+                              <span>Open Emergency Case</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => handleRemovePatientLink(patient.id)}
+                              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-red-600 hover:bg-red-50 transition-colors"
+                              title="Unlink this patient"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                              <span>Unlink</span>
+                            </button>
+                          </div>
                         </div>
-                        <h3 className="font-bold text-slate-900 text-base">No Patients Linked Yet</h3>
-                        <p className="text-xs text-slate-500 mt-1 mb-5">
-                          You currently have no patients associated with your account. Link a patient or family member to initiate emergency bed reservations, oxygen requests, and ambulance dispatch.
-                        </p>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* TAB 2: TRACK REQUESTS */}
+              {dashboardTab === 'track' && (
+                <div className="bg-white rounded-2xl p-6 sm:p-8 border border-slate-200 shadow-xs space-y-6">
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+                    <div>
+                      <h2 className="text-xl font-bold text-slate-900 flex items-center gap-2">
+                        <Activity className="h-5 w-5 text-[#00707E]" />
+                        <span>Live Resource Request Tracker</span>
+                      </h2>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        Real-time status of bed allocations, ICU bookings, blood requisitions, and ambulance routes
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setDashboardTab('cases')}
+                      className="text-xs font-bold text-[#00707E] hover:underline"
+                    >
+                      ← Back to Cases
+                    </button>
+                  </div>
+
+                  {casesList.length === 0 ? (
+                    <div className="text-center py-12 px-4 max-w-md mx-auto">
+                      <div className="h-14 w-14 rounded-2xl bg-teal-50 border border-teal-200 text-teal-700 flex items-center justify-center mx-auto mb-3">
+                        <Activity className="h-7 w-7" />
+                      </div>
+                      <h3 className="font-bold text-slate-900 text-base">No Active Resource Requests</h3>
+                      <p className="text-xs text-slate-500 mt-1 mb-5">
+                        When you open an emergency case, requested resources will display their multi-stage verification and dispatch timeline here.
+                      </p>
+                      {linkedPatients.length > 0 ? (
+                        <button
+                          type="button"
+                          onClick={handleCreateNewCase}
+                          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#00707E] hover:bg-[#005B66] text-white font-bold text-xs shadow-sm transition-all"
+                        >
+                          <PlusCircle className="h-4 w-4" />
+                          <span>Create Emergency Case</span>
+                        </button>
+                      ) : (
                         <button
                           type="button"
                           onClick={() => setIsLinkPatientModalOpen(true)}
                           className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#00707E] hover:bg-[#005B66] text-white font-bold text-xs shadow-sm transition-all"
                         >
                           <UserPlus className="h-4 w-4" />
-                          <span>Link Patient Now</span>
+                          <span>Link Patient First</span>
                         </button>
-                      </div>
-                    ) : (
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        {linkedPatients.map((patient) => (
-                          <div
-                            key={patient.id}
-                            className="p-5 rounded-2xl border border-slate-200 bg-slate-50 hover:bg-white hover:border-teal-300 transition-all shadow-xs flex flex-col justify-between"
-                          >
-                            <div>
-                              <div className="flex items-start justify-between gap-2 pb-3 border-b border-slate-200">
-                                <div className="flex items-center gap-3">
-                                  <div className="h-10 w-10 rounded-xl bg-teal-100 text-teal-800 font-extrabold flex items-center justify-center text-sm">
-                                    {patient.patientName.charAt(0)}
-                                  </div>
-                                  <div>
-                                    <h3 className="font-extrabold text-slate-900 text-base">{patient.patientName}</h3>
-                                    <p className="text-xs text-slate-500 font-medium">
-                                      {patient.relationship} • {patient.patientAge} years • {patient.patientGender}
-                                    </p>
-                                  </div>
-                                </div>
-                                {patient.patientBloodGroup && patient.patientBloodGroup !== 'Unknown' && (
-                                  <span className="px-2.5 py-1 rounded-lg text-xs font-bold bg-red-50 text-red-700 border border-red-200">
-                                    {patient.patientBloodGroup}
-                                  </span>
-                                )}
-                              </div>
-
-                              <div className="py-3 space-y-2 text-xs">
-                                <div className="flex items-center justify-between text-slate-600">
-                                  <span className="font-medium text-slate-500">Emergency Phone:</span>
-                                  <span className="font-semibold text-slate-900">{patient.emergencyContactPhone || 'Not specified'}</span>
-                                </div>
-                                <div className="flex items-center justify-between text-slate-600">
-                                  <span className="font-medium text-slate-500">Patient Consent:</span>
-                                  <span className="inline-flex items-center gap-1 font-bold text-[11px] text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
-                                    <ShieldCheck className="h-3 w-3 text-emerald-600" />
-                                    <span>Verified & Active</span>
-                                  </span>
-                                </div>
-                                {patient.medicalNotes && (
-                                  <div className="bg-white p-2.5 rounded-xl border border-slate-200/80 text-slate-700">
-                                    <span className="font-bold text-slate-900 block mb-0.5">Known Medical Notes / Allergies:</span>
-                                    <span>{patient.medicalNotes}</span>
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-
-                            <div className="pt-3 border-t border-slate-200 flex items-center justify-between gap-2">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setPatientName(patient.patientName);
-                                  setPatientAge(String(patient.patientAge));
-                                  setPatientGender(patient.patientGender);
-                                  setPatientBloodGroup(patient.patientBloodGroup || 'Unknown');
-                                  setAttendantRelation(patient.relationship || 'Guardian');
-                                  if (patient.emergencyContactPhone) setAttendantPhone(patient.emergencyContactPhone);
-                                  if (patient.medicalNotes) setPatientCondition(patient.medicalNotes);
-                                  setCurrentScreen('selection');
-                                }}
-                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#00707E] hover:bg-[#005B66] text-white text-xs font-bold transition-all shadow-2xs"
-                              >
-                                <PlusCircle className="h-3.5 w-3.5" />
-                                <span>Open Emergency Case</span>
-                              </button>
-
-                              <button
-                                type="button"
-                                onClick={() => handleRemovePatientLink(patient.id)}
-                                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-red-600 hover:bg-red-50 transition-colors"
-                                title="Unlink this patient"
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                                <span>Unlink</span>
-                              </button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* TAB 2: TRACK REQUESTS */}
-                {dashboardTab === 'track' && (
-                  <div className="bg-white rounded-2xl p-6 sm:p-8 border border-slate-200 shadow-xs space-y-6">
-                    <div className="flex items-center justify-between border-b border-slate-100 pb-4">
-                      <div>
-                        <h2 className="text-xl font-bold text-slate-900 flex items-center gap-2">
-                          <Activity className="h-5 w-5 text-[#00707E]" />
-                          <span>Live Resource Request Tracker</span>
-                        </h2>
-                        <p className="text-xs text-slate-500 mt-0.5">
-                          Real-time status of bed allocations, ICU bookings, blood requisitions, and ambulance routes
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setDashboardTab('cases')}
-                        className="text-xs font-bold text-[#00707E] hover:underline"
-                      >
-                        ← Back to Cases
-                      </button>
+                      )}
                     </div>
-
-                    {casesList.length === 0 ? (
-                      <div className="text-center py-12 px-4 max-w-md mx-auto">
-                        <div className="h-14 w-14 rounded-2xl bg-teal-50 border border-teal-200 text-teal-700 flex items-center justify-center mx-auto mb-3">
-                          <Activity className="h-7 w-7" />
-                        </div>
-                        <h3 className="font-bold text-slate-900 text-base">No Active Resource Requests</h3>
-                        <p className="text-xs text-slate-500 mt-1 mb-5">
-                          When you open an emergency case, requested resources will display their multi-stage verification and dispatch timeline here.
-                        </p>
-                        {linkedPatients.length > 0 ? (
-                          <button
-                            type="button"
-                            onClick={handleCreateNewCase}
-                            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#00707E] hover:bg-[#005B66] text-white font-bold text-xs shadow-sm transition-all"
-                          >
-                            <PlusCircle className="h-4 w-4" />
-                            <span>Create Emergency Case</span>
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => setIsLinkPatientModalOpen(true)}
-                            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#00707E] hover:bg-[#005B66] text-white font-bold text-xs shadow-sm transition-all"
-                          >
-                            <UserPlus className="h-4 w-4" />
-                            <span>Link Patient First</span>
-                          </button>
-                        )}
-                      </div>
-                    ) : (
-                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                        {casesList.flatMap((c) =>
-                          (c.individualStatuses || []).map((statusItem, idx) => (
-                            <div key={`${c.caseId}-${idx}`} className="p-4 rounded-2xl border border-slate-200 bg-slate-50 space-y-3">
-                              <div className="flex items-center justify-between">
-                                <span className="text-xs font-bold text-slate-900">{statusItem.resource}</span>
-                                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-teal-100 text-teal-800">
-                                  {statusItem.status}
-                                </span>
-                              </div>
-                              <div className="w-full bg-slate-200 rounded-full h-1.5">
-                                <div
-                                  className={`h-1.5 rounded-full ${statusItem.code === 'dispatched'
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                      {casesList.flatMap((c) =>
+                        (c.individualStatuses || []).map((statusItem, idx) => (
+                          <div key={`${c.caseId}-${idx}`} className="p-4 rounded-2xl border border-slate-200 bg-slate-50 space-y-3">
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs font-bold text-slate-900">{statusItem.resource}</span>
+                              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-teal-100 text-teal-800">
+                                {statusItem.status}
+                              </span>
+                            </div>
+                            <div className="w-full bg-slate-200 rounded-full h-1.5">
+                              <div
+                                className={`h-1.5 rounded-full ${
+                                  statusItem.code === 'dispatched'
                                     ? 'bg-emerald-600 w-full'
                                     : statusItem.code === 'reserved'
-                                      ? 'bg-teal-600 w-3/4'
-                                      : 'bg-amber-500 w-1/2'
-                                    }`}
-                                />
-                              </div>
-                              <p className="text-xs text-slate-600">{statusItem.detail}</p>
-                              <div className="pt-2 border-t border-slate-200/60 text-[11px] text-slate-500 flex justify-between">
-                                <span className="font-mono">{c.caseId}</span>
-                                <span>{c.patientName}</span>
-                              </div>
+                                    ? 'bg-teal-600 w-3/4'
+                                    : 'bg-amber-500 w-1/2'
+                                }`}
+                              />
                             </div>
-                          ))
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* TAB 3: NOTIFICATIONS */}
-                {dashboardTab === 'notifications' && (
-                  <div className="bg-white rounded-2xl p-6 sm:p-8 border border-slate-200 shadow-xs space-y-4">
-                    <div className="flex items-center justify-between border-b border-slate-100 pb-4">
-                      <div>
-                        <h2 className="text-xl font-bold text-slate-900 flex items-center gap-2">
-                          <Bell className="h-5 w-5 text-[#00707E]" />
-                          <span>Dispatch Notifications</span>
-                        </h2>
-                        <p className="text-xs text-slate-500 mt-0.5">
-                          Live alerts from hospitals, ambulance pilots, and triage coordinators
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setDashboardTab('cases')}
-                        className="text-xs font-bold text-[#00707E] hover:underline"
-                      >
-                        ← Back to Cases
-                      </button>
-                    </div>
-
-                    {casesList.length === 0 ? (
-                      <div className="text-center py-10 px-4 max-w-md mx-auto">
-                        <div className="h-12 w-12 rounded-2xl bg-slate-50 border border-slate-200 text-slate-400 flex items-center justify-center mx-auto mb-3">
-                          <Bell className="h-6 w-6" />
-                        </div>
-                        <h3 className="font-bold text-slate-900 text-sm">No Notifications</h3>
-                        <p className="text-xs text-slate-500 mt-1">
-                          All caught up. Live dispatch notifications and triage alerts will appear here when an emergency case is initiated.
-                        </p>
-                      </div>
-                    ) : (
-                      <div className="space-y-3">
-                        {casesList.map((c) => (
-                          <div key={c.caseId} className="p-3.5 rounded-xl bg-teal-50 border border-teal-200 flex items-start gap-3">
-                            <div className="h-8 w-8 rounded-lg bg-teal-600 text-white flex items-center justify-center shrink-0">
-                              <Check className="h-4 w-4" />
-                            </div>
-                            <div>
-                              <div className="flex items-center gap-2">
-                                <span className="text-xs font-bold text-slate-900">Case {c.caseId} Active Dispatch</span>
-                                <span className="text-[10px] text-slate-400">{c.createdAt}</span>
-                              </div>
-                              <p className="text-xs text-slate-600 mt-0.5">
-                                Emergency dispatch ongoing for {c.patientName} at {c.providerName}.
-                              </p>
+                            <p className="text-xs text-slate-600">{statusItem.detail}</p>
+                            <div className="pt-2 border-t border-slate-200/60 text-[11px] text-slate-500 flex justify-between">
+                              <span className="font-mono">{c.caseId}</span>
+                              <span>{c.patientName}</span>
                             </div>
                           </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
 
-                {/* TAB 4: EMERGENCY HISTORY */}
-                {dashboardTab === 'history' && (
-                  <div className="bg-white rounded-2xl p-6 sm:p-8 border border-slate-200 shadow-xs space-y-4">
-                    <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+              {/* TAB 3: NOTIFICATIONS */}
+              {dashboardTab === 'notifications' && (
+                <div className="bg-white rounded-2xl p-6 sm:p-8 border border-slate-200 shadow-xs space-y-4">
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+                    <div>
+                      <h2 className="text-xl font-bold text-slate-900 flex items-center gap-2">
+                        <Bell className="h-5 w-5 text-[#00707E]" />
+                        <span>Dispatch Notifications</span>
+                      </h2>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        Live alerts from hospitals, ambulance pilots, and triage coordinators
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setDashboardTab('cases')}
+                      className="text-xs font-bold text-[#00707E] hover:underline"
+                    >
+                      ← Back to Cases
+                    </button>
+                  </div>
+
+                  {casesList.length === 0 ? (
+                    <div className="text-center py-10 px-4 max-w-md mx-auto">
+                      <div className="h-12 w-12 rounded-2xl bg-slate-50 border border-slate-200 text-slate-400 flex items-center justify-center mx-auto mb-3">
+                        <Bell className="h-6 w-6" />
+                      </div>
+                      <h3 className="font-bold text-slate-900 text-sm">No Notifications</h3>
+                      <p className="text-xs text-slate-500 mt-1">
+                        All caught up. Live dispatch notifications and triage alerts will appear here when an emergency case is initiated.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {casesList.map((c) => (
+                        <div key={c.caseId} className="p-3.5 rounded-xl bg-teal-50 border border-teal-200 flex items-start gap-3">
+                          <div className="h-8 w-8 rounded-lg bg-teal-600 text-white flex items-center justify-center shrink-0">
+                            <Check className="h-4 w-4" />
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-bold text-slate-900">Case {c.caseId} Active Dispatch</span>
+                              <span className="text-[10px] text-slate-400">{c.createdAt}</span>
+                            </div>
+                            <p className="text-xs text-slate-600 mt-0.5">
+                              Emergency dispatch ongoing for {c.patientName} at {c.providerName}.
+                            </p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* TAB 4: EMERGENCY HISTORY */}
+              {dashboardTab === 'history' && (
+                <div className="bg-white rounded-2xl p-6 sm:p-8 border border-slate-200 shadow-xs space-y-4">
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+                    <div>
+                      <h2 className="text-xl font-bold text-slate-900 flex items-center gap-2">
+                        <History className="h-5 w-5 text-[#00707E]" />
+                        <span>Emergency History</span>
+                      </h2>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        Live emergency records available to you
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setDashboardTab('cases')}
+                      className="text-xs font-bold text-[#00707E] hover:underline"
+                    >
+                      ← Back to Cases
+                    </button>
+                  </div>
+
+                  {currentUser?.role === 'patient' && (
+                    <section className="rounded-xl border border-teal-200 bg-teal-50/60 p-4 space-y-3">
                       <div>
-                        <h2 className="text-xl font-bold text-slate-900 flex items-center gap-2">
-                          <History className="h-5 w-5 text-[#00707E]" />
-                          <span>Emergency History</span>
-                        </h2>
-                        <p className="text-xs text-slate-500 mt-0.5">
-                          Live emergency records available to you
+                        <h3 className="text-sm font-bold text-slate-900">Patient attendant access</h3>
+                        <p className="text-xs text-slate-600 mt-1">
+                          Share your account UID with an attendant. Add their registered UID to grant access to your emergency history; you can revoke it at any time.
+                        </p>
+                        <p className="mt-2 text-xs text-slate-700">
+                          Your CareBridge UID: <span className="font-mono font-semibold select-all">{currentUser.uid}</span>
                         </p>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => setDashboardTab('cases')}
-                        className="text-xs font-bold text-[#00707E] hover:underline"
+                      <form
+                        className="flex flex-col sm:flex-row gap-2"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          const uid = attendantUidInput.trim();
+                          if (uid) void handleAttendantConsent(uid, true);
+                        }}
                       >
-                        ← Back to Cases
-                      </button>
-                    </div>
-
-                    {currentUser?.role === 'patient' && (
-                      <section className="rounded-xl border border-teal-200 bg-teal-50/60 p-4 space-y-3">
-                        <div>
-                          <h3 className="text-sm font-bold text-slate-900">Patient attendant access</h3>
-                          <p className="text-xs text-slate-600 mt-1">
-                            Share your account UID with an attendant. Add their registered UID to grant access to your emergency history; you can revoke it at any time.
-                          </p>
-                          <p className="mt-2 text-xs text-slate-700">
-                            Your CareBridge UID: <span className="font-mono font-semibold select-all">{currentUser.uid}</span>
-                          </p>
-                        </div>
-                        <form
-                          className="flex flex-col sm:flex-row gap-2"
-                          onSubmit={(event) => {
-                            event.preventDefault();
-                            const uid = attendantUidInput.trim();
-                            if (uid) void handleAttendantConsent(uid, true);
-                          }}
+                        <input
+                          type="text"
+                          value={attendantUidInput}
+                          onChange={(event) => setAttendantUidInput(event.target.value)}
+                          placeholder="Attendant’s registered account UID"
+                          aria-label="Attendant's CareBridge account UID"
+                          className="min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-teal-500"
+                        />
+                        <button
+                          type="submit"
+                          disabled={!attendantUidInput.trim() || savingAttendantUid !== null}
+                          className="rounded-lg bg-[#00707E] px-4 py-2 text-xs font-bold text-white disabled:opacity-50"
                         >
-                          <input
-                            type="text"
-                            value={attendantUidInput}
-                            onChange={(event) => setAttendantUidInput(event.target.value)}
-                            placeholder="Attendant’s registered account UID"
-                            aria-label="Attendant's CareBridge account UID"
-                            className="min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-teal-500"
-                          />
-                          <button
-                            type="submit"
-                            disabled={!attendantUidInput.trim() || savingAttendantUid !== null}
-                            className="rounded-lg bg-[#00707E] px-4 py-2 text-xs font-bold text-white disabled:opacity-50"
-                          >
-                            {savingAttendantUid === attendantUidInput.trim() ? 'Saving…' : 'Grant access'}
-                          </button>
-                        </form>
-                        {attendantLinks.length > 0 && (
-                          <div className="space-y-2">
-                            {attendantLinks.map((link) => (
-                              <div key={link.attendantUid} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2">
-                                <div>
-                                  <span className="font-mono text-xs font-semibold text-slate-800">{link.attendantUid}</span>
-                                  <span className={`ml-2 text-[10px] font-bold ${link.activeConsent ? 'text-emerald-700' : 'text-slate-500'}`}>
-                                    {link.activeConsent ? 'Active consent' : 'Revoked'}
-                                  </span>
-                                </div>
-                                <button
-                                  type="button"
-                                  disabled={savingAttendantUid !== null}
-                                  onClick={() => void handleAttendantConsent(link.attendantUid, !link.activeConsent)}
-                                  className="text-xs font-bold text-[#00707E] hover:underline disabled:opacity-50"
-                                >
-                                  {link.activeConsent ? 'Revoke access' : 'Restore access'}
-                                </button>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </section>
-                    )}
-
-                    {historyNotice && (
-                      <div role="status" className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs font-medium text-emerald-800">
-                        {historyNotice}
-                      </div>
-                    )}
-                    {historyError && (
-                      <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs font-medium text-red-800">
-                        {historyError}
-                      </div>
-                    )}
-                    {isHistoryLoading ? (
-                      <div role="status" className="py-10 text-center text-sm text-slate-500">
-                        <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-slate-300 border-t-[#00707E] align-[-3px] mr-2" />
-                        Loading emergency history…
-                      </div>
-                    ) : historyRecords.length === 0 ? (
-                      historyError ? null : (
-                        <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-10 text-center">
-                          <History className="mx-auto h-8 w-8 text-slate-400" />
-                          <p className="mt-2 text-sm font-semibold text-slate-700">No emergency records found</p>
-                          <p className="mt-1 text-xs text-slate-500">
-                            Your own cases and cases shared with you using active consent will appear here.
-                          </p>
-                        </div>
-                      )
-                    ) : (
-                      <div className="space-y-3">
-                        {historyRecords.map((record) => (
-                          <article key={record.caseId} className="rounded-xl border border-slate-200 bg-white p-4">
-                            <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
-                              <div className="space-y-1.5">
-                                <p className="font-mono text-xs font-bold text-slate-900">{record.caseId}</p>
-                                <p className="text-sm font-semibold text-slate-800">
-                                  Category: {record.conditionSummary || 'Emergency case'}
-                                </p>
-                                <p className="text-xs text-slate-600">
-                                  Priority: <span className="font-semibold capitalize">{record.urgencyLevel}</span>
-                                  <span className="mx-2 text-slate-300">•</span>
-                                  {new Date(record.createdAt).toLocaleString()}
-                                </p>
-                                <p className="text-xs text-slate-600">
-                                  Status: <span className="font-semibold capitalize">{record.status}</span>
-                                </p>
-                                {(record.resourceRequests || []).length > 0 && (
-                                  <div className="pt-1 space-y-1">
-                                    <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Resource request statuses</p>
-                                    {record.resourceRequests?.map((request) => (
-                                      <p key={request.requestId} className="text-xs text-slate-600">
-                                        <span className="font-semibold capitalize">{request.resourceType.replaceAll('_', ' ')}</span>: {String(request.status).replaceAll('_', ' ')}
-                                      </p>
-                                    ))}
-                                  </div>
-                                )}
-                                {Object.values(record.lifecycleHistory || {}).length > 0 && (
-                                  <div className="pt-1 space-y-1">
-                                    <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Recent status updates</p>
-                                    {[...Object.values(record.lifecycleHistory || {})]
-                                      .sort((left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp))
-                                      .slice(0, 3)
-                                      .map((event) => (
-                                        <p key={event.eventId} className="text-xs text-slate-600">
-                                          {event.previousStatus.replaceAll('_', ' ')} → {event.newStatus.replaceAll('_', ' ')} · {new Date(event.timestamp).toLocaleString()}
-                                        </p>
-                                      ))}
-                                  </div>
-                                )}
+                          {savingAttendantUid === attendantUidInput.trim() ? 'Saving…' : 'Grant access'}
+                        </button>
+                      </form>
+                      {attendantLinks.length > 0 && (
+                        <div className="space-y-2">
+                          {attendantLinks.map((link) => (
+                            <div key={link.attendantUid} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2">
+                              <div>
+                                <span className="font-mono text-xs font-semibold text-slate-800">{link.attendantUid}</span>
+                                <span className={`ml-2 text-[10px] font-bold ${link.activeConsent ? 'text-emerald-700' : 'text-slate-500'}`}>
+                                  {link.activeConsent ? 'Active consent' : 'Revoked'}
+                                </span>
                               </div>
                               <button
                                 type="button"
-                                onClick={() => openHistoryDetails(record)}
-                                className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-teal-200 bg-teal-50 px-3 py-2 text-xs font-bold text-[#00707E] hover:bg-teal-100"
+                                disabled={savingAttendantUid !== null}
+                                onClick={() => void handleAttendantConsent(link.attendantUid, !link.activeConsent)}
+                                className="text-xs font-bold text-[#00707E] hover:underline disabled:opacity-50"
                               >
-                                <Eye className="h-3.5 w-3.5" />
-                                Open details
+                                {link.activeConsent ? 'Revoke access' : 'Restore access'}
                               </button>
                             </div>
-                          </article>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
+                          ))}
+                        </div>
+                      )}
+                    </section>
+                  )}
 
-                {/* TAB 5: PROFILE SETTINGS */}
-                {dashboardTab === 'profile' && (
-                  <div className="bg-white rounded-2xl p-6 sm:p-8 border border-slate-200 shadow-xs space-y-6">
-                    <div className="flex items-center justify-between border-b border-slate-100 pb-4">
-                      <div>
-                        <h2 className="text-xl font-bold text-slate-900 flex items-center gap-2">
-                          <Settings className="h-5 w-5 text-[#00707E]" />
-                          <span>Attendant & Profile Settings</span>
-                        </h2>
-                        <p className="text-xs text-slate-500 mt-0.5">
-                          Primary attendant credentials and registered emergency contacts
+                  {historyNotice && (
+                    <div role="status" className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs font-medium text-emerald-800">
+                      {historyNotice}
+                    </div>
+                  )}
+                  {historyError && (
+                    <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs font-medium text-red-800">
+                      {historyError}
+                    </div>
+                  )}
+                  {isHistoryLoading ? (
+                    <div role="status" className="py-10 text-center text-sm text-slate-500">
+                      <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-slate-300 border-t-[#00707E] align-[-3px] mr-2" />
+                      Loading emergency history…
+                    </div>
+                  ) : historyRecords.length === 0 ? (
+                    historyError ? null : (
+                      <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-10 text-center">
+                        <History className="mx-auto h-8 w-8 text-slate-400" />
+                        <p className="mt-2 text-sm font-semibold text-slate-700">No emergency records found</p>
+                        <p className="mt-1 text-xs text-slate-500">
+                          Your own cases and cases shared with you using active consent will appear here.
                         </p>
                       </div>
+                    )
+                  ) : (
+                    <div className="space-y-3">
+                      {historyRecords.map((record) => (
+                        <article key={record.caseId} className="rounded-xl border border-slate-200 bg-white p-4">
+                          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+                            <div className="space-y-1.5">
+                              <p className="font-mono text-xs font-bold text-slate-900">{record.caseId}</p>
+                              <p className="text-sm font-semibold text-slate-800">
+                                Category: {record.conditionSummary || 'Emergency case'}
+                              </p>
+                              <p className="text-xs text-slate-600">
+                                Priority: <span className="font-semibold capitalize">{record.urgencyLevel}</span>
+                                <span className="mx-2 text-slate-300">•</span>
+                                {new Date(record.createdAt).toLocaleString()}
+                              </p>
+                              <p className="text-xs text-slate-600">
+                                Status: <span className="font-semibold capitalize">{record.status}</span>
+                              </p>
+                              {(record.resourceRequests || []).length > 0 && (
+                                <div className="pt-1 space-y-1">
+                                  <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Resource request statuses</p>
+                                  {record.resourceRequests?.map((request) => (
+                                    <p key={request.requestId} className="text-xs text-slate-600">
+                                      <span className="font-semibold capitalize">{request.resourceType.replaceAll('_', ' ')}</span>: {String(request.status).replaceAll('_', ' ')}
+                                    </p>
+                                  ))}
+                                </div>
+                              )}
+                              {Object.values(record.lifecycleHistory || {}).length > 0 && (
+                                <div className="pt-1 space-y-1">
+                                  <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Recent status updates</p>
+                                  {[...Object.values(record.lifecycleHistory || {})]
+                                    .sort((left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp))
+                                    .slice(0, 3)
+                                    .map((event) => (
+                                      <p key={event.eventId} className="text-xs text-slate-600">
+                                        {event.previousStatus.replaceAll('_', ' ')} → {event.newStatus.replaceAll('_', ' ')} · {new Date(event.timestamp).toLocaleString()}
+                                      </p>
+                                    ))}
+                                </div>
+                              )}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => openHistoryDetails(record)}
+                              className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-teal-200 bg-teal-50 px-3 py-2 text-xs font-bold text-[#00707E] hover:bg-teal-100"
+                            >
+                              <Eye className="h-3.5 w-3.5" />
+                              Open details
+                            </button>
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* TAB 5: PROFILE SETTINGS */}
+              {dashboardTab === 'profile' && (
+                <div className="bg-white rounded-2xl p-6 sm:p-8 border border-slate-200 shadow-xs space-y-6">
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+                    <div>
+                      <h2 className="text-xl font-bold text-slate-900 flex items-center gap-2">
+                        <Settings className="h-5 w-5 text-[#00707E]" />
+                        <span>Attendant & Profile Settings</span>
+                      </h2>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        Primary attendant credentials and registered emergency contacts
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setDashboardTab('cases')}
+                      className="text-xs font-bold text-[#00707E] hover:underline"
+                    >
+                      ← Back to Cases
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+                    <div className="p-4 rounded-xl border border-slate-200 bg-slate-50 space-y-1">
+                      <span className="text-slate-400 uppercase font-bold text-[10px]">Registered Attendant</span>
+                      <p className="font-bold text-slate-900 text-sm">{currentUser?.displayName || 'Sahana S.'}</p>
+                      <p className="text-slate-600">Email: {currentUser?.email || 'sahana2006@gmail.com'}</p>
+                      <p className="text-[#00707E] font-bold">Role: Patient Attendant</p>
+                    </div>
+
+                    <div className="p-4 rounded-xl border border-slate-200 bg-slate-50 space-y-1">
+                      <span className="text-slate-400 uppercase font-bold text-[10px]">Authorized Patient Network</span>
+                      <p className="font-bold text-slate-900 text-sm">{linkedPatients.length} Linked Patient{linkedPatients.length === 1 ? '' : 's'}</p>
+                      <p className="text-slate-600">
+                        {linkedPatients.length > 0
+                          ? linkedPatients.map((p) => p.patientName).join(', ')
+                          : 'No patients linked yet'}
+                      </p>
+                    </div>
+
+                    <div className="p-4 rounded-xl border border-slate-200 bg-slate-50 space-y-1">
+                      <span className="text-slate-400 uppercase font-bold text-[10px]">Emergency Contact Phone</span>
+                      <p className="font-bold text-slate-900 text-sm">
+                        {linkedPatients[0]?.emergencyContactPhone || '+91 98451 98765'}
+                      </p>
+                      <p className="text-emerald-700 font-semibold">SMS Dispatch Alerts Enabled</p>
+                    </div>
+
+                    <div className="p-4 rounded-xl border border-slate-200 bg-slate-50 space-y-1">
+                      <span className="text-slate-400 uppercase font-bold text-[10px]">Security Status</span>
+                      <p className="font-bold text-emerald-700 text-sm">CareBridge Verified Attendant</p>
+                      <p className="text-slate-600 truncate font-mono text-[11px]">UID: {currentUser?.uid || 'authenticated'}</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+            </div>
+
+            {/* Mandatory Availability Disclaimer */}
+            <div className="text-center py-4 text-xs sm:text-sm text-slate-600 font-medium border-t border-slate-200 bg-white/60">
+              *All availability data is real-time and reported by registered providers.*
+            </div>
+
+            {/* ============================================================== */}
+            {/* INTERACTIVE CASE DETAILS MODAL (Task 1.7 Requirement 5)         */}
+            {/* ============================================================== */}
+            {selectedDashboardCase && (
+              <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+                <div className="bg-white rounded-3xl shadow-2xl max-w-xl w-full p-6 sm:p-7 border border-slate-100 max-h-[90vh] overflow-y-auto">
+                  
+                  {/* Modal Header */}
+                  <div className="flex items-center justify-between pb-4 border-b border-slate-100 mb-4">
+                    <div className="flex items-center gap-2.5">
+                      <div className="h-10 w-10 rounded-xl bg-teal-50 border border-teal-200 text-[#00707E] flex items-center justify-center">
+                        <FileText className="h-5 w-5" />
+                      </div>
+                      <div>
+                        <h3 className="font-bold text-slate-900 text-base sm:text-lg">
+                          Emergency Case Record & Dossier
+                        </h3>
+                        <p className="text-xs text-slate-500 font-mono">Case ID: {selectedDashboardCase.caseId}</p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedCaseFromHistory(false);
+                        setSelectedDashboardCase(null);
+                      }}
+                      className="text-slate-400 hover:text-slate-700 p-1.5 rounded-lg hover:bg-slate-100 transition-colors"
+                    >
+                      ✕
+                    </button>
+                  </div>
+
+                  {/* Priority & Status Banner */}
+                  <div className="bg-teal-50 border border-teal-200 rounded-2xl p-3.5 mb-4 flex items-center justify-between">
+                    <div>
+                      <span className="text-[10px] font-bold text-teal-800 uppercase tracking-wide block">
+                        Triage Priority
+                      </span>
+                      <div className="mt-1">
+                        {getTriageBadge(selectedDashboardCase.triagePriority)}
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wide block">
+                        Case Status
+                      </span>
+                      <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-white border border-teal-300 text-teal-800 inline-block mt-1">
+                        {selectedDashboardCase.status || 'Active Dispatch'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Patient & Attendant Dossier */}
+                  <div className="space-y-2 text-xs bg-slate-50 p-4 rounded-2xl border border-slate-200 mb-4">
+                    <div>
+                      <span className="text-slate-500 font-medium">Patient:</span>{' '}
+                      <span className="font-bold text-slate-900">{selectedDashboardCase.patientName}</span> ({selectedDashboardCase.patientAge} years, {selectedDashboardCase.patientGender})
+                    </div>
+                    <div>
+                      <span className="text-slate-500 font-medium">Blood Group:</span>{' '}
+                      <span className="font-bold text-red-600">{selectedDashboardCase.patientBloodGroup}</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-500 font-medium">Condition & Complaint:</span>{' '}
+                      <span className="font-semibold text-slate-900">{selectedDashboardCase.patientCondition}</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-500 font-medium">Clinical Description:</span>{' '}
+                      <span className="text-slate-700">{selectedDashboardCase.emergencyDescription}</span>
+                    </div>
+                    <div className="pt-1 border-t border-slate-200/60">
+                      <span className="text-slate-500 font-medium">Attendant:</span>{' '}
+                      <span className="font-semibold text-slate-900">{selectedDashboardCase.attendantName}</span> ({selectedDashboardCase.attendantRelation}) • {selectedDashboardCase.attendantPhone}
+                    </div>
+                    <div>
+                      <span className="text-slate-500 font-medium">Incident Location:</span>{' '}
+                      <span className="font-semibold text-slate-900">{selectedDashboardCase.incidentAddress}</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-500 font-medium">Assigned Provider:</span>{' '}
+                      <span className="font-bold text-[#00707E]">{selectedDashboardCase.providerName}</span>
+                    </div>
+                  </div>
+
+                  {/* Individual Resource Requests for this case */}
+                  <div className="mb-4">
+                    <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
+                      Associated Resource Requests
+                    </h4>
+                    <div className="space-y-2">
+                      {selectedDashboardCase.individualStatuses?.map((item) => (
+                        <div
+                          key={item.resource}
+                          className="p-2.5 rounded-xl border border-slate-200 bg-white flex items-center justify-between text-xs"
+                        >
+                          <div>
+                            <span className="font-bold text-slate-900">{item.resource}</span>
+                            <p className="text-[11px] text-slate-500">{item.detail}</p>
+                          </div>
+                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-teal-50 text-teal-800 border border-teal-200 whitespace-nowrap">
+                            {item.status}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Action Buttons */}
+                  <div className="space-y-2 pt-2 border-t border-slate-100">
+                    <div className="flex gap-2">
                       <button
                         type="button"
-                        onClick={() => setDashboardTab('cases')}
-                        className="text-xs font-bold text-[#00707E] hover:underline"
+                        onClick={() => copyCaseId(selectedDashboardCase.caseId)}
+                        className="flex-1 py-2 px-3 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-semibold text-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
                       >
-                        ← Back to Cases
+                        <Copy className="h-3.5 w-3.5" />
+                        <span>{copiedCaseId ? 'Copied!' : 'Copy Case ID'}</span>
                       </button>
-                    </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
-                      <div className="p-4 rounded-xl border border-slate-200 bg-slate-50 space-y-1">
-                        <span className="text-slate-400 uppercase font-bold text-[10px]">Registered Attendant</span>
-                        <p className="font-bold text-slate-900 text-sm">{currentUser?.displayName || currentUser?.email?.split('@')[0] || 'CareBridge User'}</p>
-                        <p className="text-slate-600">Email: {currentUser?.email || 'N/A'}</p>
-                        <p className="text-[#00707E] font-bold">Role: Patient Attendant</p>
-                      </div>
-
-                      <div className="p-4 rounded-xl border border-slate-200 bg-slate-50 space-y-1">
-                        <span className="text-slate-400 uppercase font-bold text-[10px]">Authorized Patient Network</span>
-                        <p className="font-bold text-slate-900 text-sm">{linkedPatients.length} Linked Patient{linkedPatients.length === 1 ? '' : 's'}</p>
-                        <p className="text-slate-600">
-                          {linkedPatients.length > 0
-                            ? linkedPatients.map((p) => p.patientName).join(', ')
-                            : 'No patients linked yet'}
-                        </p>
-                      </div>
-
-                      <div className="p-4 rounded-xl border border-slate-200 bg-slate-50 space-y-1">
-                        <span className="text-slate-400 uppercase font-bold text-[10px]">Emergency Contact Phone</span>
-                        <p className="font-bold text-slate-900 text-sm">
-                          {linkedPatients[0]?.emergencyContactPhone || '+91 98451 98765'}
-                        </p>
-                        <p className="text-emerald-700 font-semibold">SMS Dispatch Alerts Enabled</p>
-                      </div>
-
-                      <div className="p-4 rounded-xl border border-slate-200 bg-slate-50 space-y-1">
-                        <span className="text-slate-400 uppercase font-bold text-[10px]">Security Status</span>
-                        <p className="font-bold text-emerald-700 text-sm">CareBridge Verified Attendant</p>
-                        <p className="text-slate-600 truncate font-mono text-[11px]">UID: {currentUser?.uid || 'authenticated'}</p>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-              </div>
-
-              {/* Mandatory Availability Disclaimer */}
-              <div className="text-center py-4 text-xs sm:text-sm text-slate-600 font-medium border-t border-slate-200 bg-white/60">
-                *All availability data is real-time and reported by registered providers.*
-              </div>
-
-              {/* ============================================================== */}
-              {/* INTERACTIVE CASE DETAILS MODAL (Task 1.7 Requirement 5)         */}
-              {/* ============================================================== */}
-              {selectedDashboardCase && (
-                <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-                  <div className="bg-white rounded-3xl shadow-2xl max-w-xl w-full p-6 sm:p-7 border border-slate-100 max-h-[90vh] overflow-y-auto">
-
-                    {/* Modal Header */}
-                    <div className="flex items-center justify-between pb-4 border-b border-slate-100 mb-4">
-                      <div className="flex items-center gap-2.5">
-                        <div className="h-10 w-10 rounded-xl bg-teal-50 border border-teal-200 text-[#00707E] flex items-center justify-center">
-                          <FileText className="h-5 w-5" />
-                        </div>
-                        <div>
-                          <h3 className="font-bold text-slate-900 text-base sm:text-lg">
-                            Emergency Case Record & Dossier
-                          </h3>
-                          <p className="text-xs text-slate-500 font-mono">Case ID: {selectedDashboardCase.caseId}</p>
-                        </div>
-                      </div>
                       <button
                         type="button"
                         onClick={() => {
                           setSelectedCaseFromHistory(false);
                           setSelectedDashboardCase(null);
                         }}
-                        className="text-slate-400 hover:text-slate-700 p-1.5 rounded-lg hover:bg-slate-100 transition-colors"
+                        className="flex-1 py-2 px-3 rounded-xl bg-[#00707E] hover:bg-[#005B66] text-white font-semibold text-xs transition-colors shadow-xs"
                       >
-                        ✕
+                        Close
                       </button>
                     </div>
+                  </div>
 
-                    {/* Priority & Status Banner */}
-                    <div className="bg-teal-50 border border-teal-200 rounded-2xl p-3.5 mb-4 flex items-center justify-between">
-                      <div>
-                        <span className="text-[10px] font-bold text-teal-800 uppercase tracking-wide block">
-                          Triage Priority
-                        </span>
-                        <div className="mt-1">
-                          {getTriageBadge(selectedDashboardCase.triagePriority)}
-                        </div>
+                </div>
+              </div>
+            )}
+
+            {/* ============================================================== */}
+            {/* REGISTER / LINK PATIENT MODAL (Task 1.7 Requirement 2)          */}
+            {/* ============================================================== */}
+            {isLinkPatientModalOpen && (
+              <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+                <div className="bg-white rounded-3xl shadow-2xl max-w-lg w-full p-6 sm:p-7 border border-slate-100 max-h-[90vh] overflow-y-auto">
+                  <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
+                    <div className="flex items-center gap-2.5">
+                      <div className="h-10 w-10 rounded-xl bg-teal-50 border border-teal-200 text-[#00707E] flex items-center justify-center">
+                        <UserPlus className="h-5 w-5" />
                       </div>
-                      <div className="text-right">
-                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wide block">
-                          Case Status
-                        </span>
-                        <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-white border border-teal-300 text-teal-800 inline-block mt-1">
-                          {selectedDashboardCase.status || 'Active Dispatch'}
-                        </span>
+                      <div>
+                        <h3 className="font-bold text-slate-900 text-base sm:text-lg">
+                          Link Patient to Your Profile
+                        </h3>
+                        <p className="text-xs text-slate-500">
+                          Attendant: {currentUser?.displayName || 'Sahana S.'} ({currentUser?.email || 'sahana2006@gmail.com'})
+                        </p>
                       </div>
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => setIsLinkPatientModalOpen(false)}
+                      className="text-slate-400 hover:text-slate-700 p-1.5 rounded-lg hover:bg-slate-100 transition-colors"
+                    >
+                      <X className="h-5 w-5" />
+                    </button>
+                  </div>
 
-                    {/* Patient & Attendant Dossier */}
-                    <div className="space-y-2 text-xs bg-slate-50 p-4 rounded-2xl border border-slate-200 mb-4">
-                      <div>
-                        <span className="text-slate-500 font-medium">Patient:</span>{' '}
-                        <span className="font-bold text-slate-900">{selectedDashboardCase.patientName}</span> ({selectedDashboardCase.patientAge} years, {selectedDashboardCase.patientGender})
-                      </div>
-                      <div>
-                        <span className="text-slate-500 font-medium">Blood Group:</span>{' '}
-                        <span className="font-bold text-red-600">{selectedDashboardCase.patientBloodGroup}</span>
-                      </div>
-                      <div>
-                        <span className="text-slate-500 font-medium">Condition & Complaint:</span>{' '}
-                        <span className="font-semibold text-slate-900">{selectedDashboardCase.patientCondition}</span>
-                      </div>
-                      <div>
-                        <span className="text-slate-500 font-medium">Clinical Description:</span>{' '}
-                        <span className="text-slate-700">{selectedDashboardCase.emergencyDescription}</span>
-                      </div>
-                      <div className="pt-1 border-t border-slate-200/60">
-                        <span className="text-slate-500 font-medium">Attendant:</span>{' '}
-                        <span className="font-semibold text-slate-900">{selectedDashboardCase.attendantName}</span> ({selectedDashboardCase.attendantRelation}) • {selectedDashboardCase.attendantPhone}
-                      </div>
-                      <div>
-                        <span className="text-slate-500 font-medium">Incident Location:</span>{' '}
-                        <span className="font-semibold text-slate-900">{selectedDashboardCase.incidentAddress}</span>
-                      </div>
-                      <div>
-                        <span className="text-slate-500 font-medium">Assigned Provider:</span>{' '}
-                        <span className="font-bold text-[#00707E]">{selectedDashboardCase.providerName}</span>
-                      </div>
-                    </div>
-
-                    {/* Individual Resource Requests for this case */}
-                    <div className="mb-4">
-                      <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
-                        Associated Resource Requests
-                      </h4>
-                      <div className="space-y-2">
-                        {selectedDashboardCase.individualStatuses?.map((item) => (
-                          <div
-                            key={item.resource}
-                            className="p-2.5 rounded-xl border border-slate-200 bg-white flex items-center justify-between text-xs"
-                          >
-                            <div>
-                              <span className="font-bold text-slate-900">{item.resource}</span>
-                              <p className="text-[11px] text-slate-500">{item.detail}</p>
-                            </div>
-                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-teal-50 text-teal-800 border border-teal-200 whitespace-nowrap">
-                              {item.status}
-                            </span>
+                  <form onSubmit={handleLinkPatientSubmit} className="space-y-4">
+                    {Object.keys(linkPatientErrors).length > 0 && (
+                      <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-xs text-red-700 space-y-1">
+                        {Object.values(linkPatientErrors).map((msg, i) => (
+                          <div key={i} className="flex items-center gap-1.5">
+                            <AlertCircle className="h-3.5 w-3.5 shrink-0 text-red-600" />
+                            <span>{msg}</span>
                           </div>
                         ))}
                       </div>
+                    )}
+
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">
+                        Patient Full Name <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={newPatientName}
+                        onChange={(e) => {
+                          setNewPatientName(e.target.value);
+                          if (linkPatientErrors.name) setLinkPatientErrors((prev) => ({ ...prev, name: '' }));
+                        }}
+                        placeholder="e.g. Ramesh Kumar"
+                        className="w-full px-3.5 py-2 text-sm bg-white border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#00707E] font-medium text-slate-900"
+                      />
                     </div>
 
-                    {/* Action Buttons */}
-                    <div className="space-y-2 pt-2 border-t border-slate-100">
-                      <div className="flex gap-2">
-                        <button
-                          type="button"
-                          onClick={() => copyCaseId(selectedDashboardCase.caseId)}
-                          className="flex-1 py-2 px-3 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-semibold text-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-700 mb-1">
+                          Relationship to Attendant <span className="text-red-500">*</span>
+                        </label>
+                        <select
+                          value={newPatientRelation}
+                          onChange={(e) => setNewPatientRelation(e.target.value)}
+                          className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#00707E] font-medium text-slate-900"
                         >
-                          <Copy className="h-3.5 w-3.5" />
-                          <span>{copiedCaseId ? 'Copied!' : 'Copy Case ID'}</span>
-                        </button>
+                          <option value="Parent">Parent</option>
+                          <option value="Spouse">Spouse</option>
+                          <option value="Child">Child</option>
+                          <option value="Sibling">Sibling</option>
+                          <option value="Grandparent">Grandparent</option>
+                          <option value="Guardian">Guardian</option>
+                          <option value="Friend">Friend</option>
+                          <option value="Other">Other</option>
+                        </select>
+                      </div>
 
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setSelectedCaseFromHistory(false);
-                            setSelectedDashboardCase(null);
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-700 mb-1">
+                          Age (Years) <span className="text-red-500">*</span>
+                        </label>
+                        <input
+                          type="number"
+                          min="1"
+                          max="125"
+                          required
+                          value={newPatientAge}
+                          onChange={(e) => {
+                            setNewPatientAge(e.target.value);
+                            if (linkPatientErrors.age) setLinkPatientErrors((prev) => ({ ...prev, age: '' }));
                           }}
-                          className="flex-1 py-2 px-3 rounded-xl bg-[#00707E] hover:bg-[#005B66] text-white font-semibold text-xs transition-colors shadow-xs"
-                        >
-                          Close
-                        </button>
+                          placeholder="e.g. 45"
+                          className="w-full px-3.5 py-2 text-sm bg-white border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#00707E] font-medium text-slate-900"
+                        />
                       </div>
                     </div>
 
-                  </div>
-                </div>
-              )}
-
-              {/* ============================================================== */}
-              {/* REGISTER / LINK PATIENT MODAL (Task 1.7 Requirement 2)          */}
-              {/* ============================================================== */}
-              {isLinkPatientModalOpen && (
-                <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-                  <div className="bg-white rounded-3xl shadow-2xl max-w-lg w-full p-6 sm:p-7 border border-slate-100 max-h-[90vh] overflow-y-auto">
-                    <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
-                      <div className="flex items-center gap-2.5">
-                        <div className="h-10 w-10 rounded-xl bg-teal-50 border border-teal-200 text-[#00707E] flex items-center justify-center">
-                          <UserPlus className="h-5 w-5" />
-                        </div>
-                        <div>
-                          <h3 className="font-bold text-slate-900 text-base sm:text-lg">
-                            Link Patient to Your Profile
-                          </h3>
-                          <p className="text-xs text-slate-500">
-                            Attendant: {currentUser?.displayName || currentUser?.email?.split('@')[0] || 'CareBridge User'} ({currentUser?.email || ''})
-                          </p>
-                        </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-700 mb-1">
+                          Gender <span className="text-red-500">*</span>
+                        </label>
+                        <select
+                          value={newPatientGender}
+                          onChange={(e) => setNewPatientGender(e.target.value)}
+                          className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#00707E] font-medium text-slate-900"
+                        >
+                          <option value="Male">Male</option>
+                          <option value="Female">Female</option>
+                          <option value="Other">Other</option>
+                        </select>
                       </div>
+
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-700 mb-1">
+                          Blood Group
+                        </label>
+                        <select
+                          value={newPatientBloodGroup}
+                          onChange={(e) => setNewPatientBloodGroup(e.target.value)}
+                          className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#00707E] font-medium text-slate-900"
+                        >
+                          <option value="A+">A+</option>
+                          <option value="A-">A-</option>
+                          <option value="B+">B+</option>
+                          <option value="B-">B-</option>
+                          <option value="AB+">AB+</option>
+                          <option value="AB-">AB-</option>
+                          <option value="O+">O+</option>
+                          <option value="O-">O-</option>
+                          <option value="Unknown">Unknown</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">
+                        Emergency Contact Phone <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="tel"
+                        required
+                        value={newPatientPhone}
+                        onChange={(e) => setNewPatientPhone(e.target.value)}
+                        placeholder="e.g. +91 98765 43210"
+                        className="w-full px-3.5 py-2 text-sm bg-white border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#00707E] font-medium text-slate-900"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">
+                        Known Medical Notes / Allergies / Conditions
+                      </label>
+                      <textarea
+                        rows={2}
+                        value={newPatientNotes}
+                        onChange={(e) => setNewPatientNotes(e.target.value)}
+                        placeholder="e.g. Hypertension, asthma, penicillin allergy"
+                        className="w-full px-3.5 py-2 text-sm bg-white border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#00707E] font-medium text-slate-900"
+                      />
+                    </div>
+
+                    {/* Patient Consent Verification */}
+                    <div className="p-3.5 rounded-xl bg-teal-50/80 border border-teal-200 space-y-2">
+                      <div className="flex items-start gap-2.5">
+                        <input
+                          type="checkbox"
+                          id="newPatientConsent"
+                          required
+                          checked={newPatientConsent}
+                          onChange={(e) => {
+                            setNewPatientConsent(e.target.checked);
+                            if (linkPatientErrors.consent) setLinkPatientErrors((prev) => ({ ...prev, consent: '' }));
+                          }}
+                          className="mt-0.5 h-4 w-4 rounded border-teal-400 text-[#00707E] focus:ring-[#00707E]"
+                        />
+                        <label htmlFor="newPatientConsent" className="text-xs text-slate-700 leading-snug cursor-pointer">
+                          <span className="font-bold text-slate-900 block flex items-center gap-1">
+                            <ShieldCheck className="h-3.5 w-3.5 text-teal-700" />
+                            <span>Patient Consent Verification <span className="text-red-500">*</span></span>
+                          </span>
+                          I verify that explicit consent has been granted by the patient (or their legal guardian) authorizing me to access their medical dossier and coordinate emergency healthcare resources on CareBridge.
+                        </label>
+                      </div>
+                    </div>
+
+                    <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
                       <button
                         type="button"
                         onClick={() => setIsLinkPatientModalOpen(false)}
-                        className="text-slate-400 hover:text-slate-700 p-1.5 rounded-lg hover:bg-slate-100 transition-colors"
+                        className="px-4 py-2 rounded-xl border border-slate-300 text-slate-700 hover:bg-slate-50 text-xs font-semibold transition-colors"
                       >
-                        <X className="h-5 w-5" />
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={isLinkingSubmitting}
+                        className="px-5 py-2 rounded-xl bg-[#00707E] hover:bg-[#005B66] disabled:opacity-60 text-white text-xs font-bold transition-all shadow-sm flex items-center gap-1.5"
+                      >
+                        {isLinkingSubmitting ? (
+                          <div className="h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                        ) : (
+                          <>
+                            <Check className="h-4 w-4" />
+                            <span>Save & Link Patient</span>
+                          </>
+                        )}
                       </button>
                     </div>
-
-                    <form onSubmit={handleLinkPatientSubmit} className="space-y-4">
-                      {Object.keys(linkPatientErrors).length > 0 && (
-                        <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-xs text-red-700 space-y-1">
-                          {Object.values(linkPatientErrors).map((msg, i) => (
-                            <div key={i} className="flex items-center gap-1.5">
-                              <AlertCircle className="h-3.5 w-3.5 shrink-0 text-red-600" />
-                              <span>{msg}</span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-
-                      <div>
-                        <label className="block text-xs font-semibold text-slate-700 mb-1">
-                          Patient Full Name <span className="text-red-500">*</span>
-                        </label>
-                        <input
-                          type="text"
-                          required
-                          value={newPatientName}
-                          onChange={(e) => {
-                            setNewPatientName(e.target.value);
-                            if (linkPatientErrors.name) setLinkPatientErrors((prev) => ({ ...prev, name: '' }));
-                          }}
-                          placeholder="e.g. Ramesh Kumar"
-                          className="w-full px-3.5 py-2 text-sm bg-white border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#00707E] font-medium text-slate-900"
-                        />
-                      </div>
-
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        <div>
-                          <label className="block text-xs font-semibold text-slate-700 mb-1">
-                            Relationship to Attendant <span className="text-red-500">*</span>
-                          </label>
-                          <select
-                            value={newPatientRelation}
-                            onChange={(e) => setNewPatientRelation(e.target.value)}
-                            className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#00707E] font-medium text-slate-900"
-                          >
-                            <option value="Parent">Parent</option>
-                            <option value="Spouse">Spouse</option>
-                            <option value="Child">Child</option>
-                            <option value="Sibling">Sibling</option>
-                            <option value="Grandparent">Grandparent</option>
-                            <option value="Guardian">Guardian</option>
-                            <option value="Friend">Friend</option>
-                            <option value="Other">Other</option>
-                          </select>
-                        </div>
-
-                        <div>
-                          <label className="block text-xs font-semibold text-slate-700 mb-1">
-                            Age (Years) <span className="text-red-500">*</span>
-                          </label>
-                          <input
-                            type="number"
-                            min="1"
-                            max="125"
-                            required
-                            value={newPatientAge}
-                            onChange={(e) => {
-                              setNewPatientAge(e.target.value);
-                              if (linkPatientErrors.age) setLinkPatientErrors((prev) => ({ ...prev, age: '' }));
-                            }}
-                            placeholder="e.g. 45"
-                            className="w-full px-3.5 py-2 text-sm bg-white border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#00707E] font-medium text-slate-900"
-                          />
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        <div>
-                          <label className="block text-xs font-semibold text-slate-700 mb-1">
-                            Gender <span className="text-red-500">*</span>
-                          </label>
-                          <select
-                            value={newPatientGender}
-                            onChange={(e) => setNewPatientGender(e.target.value)}
-                            className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#00707E] font-medium text-slate-900"
-                          >
-                            <option value="Male">Male</option>
-                            <option value="Female">Female</option>
-                            <option value="Other">Other</option>
-                          </select>
-                        </div>
-
-                        <div>
-                          <label className="block text-xs font-semibold text-slate-700 mb-1">
-                            Blood Group
-                          </label>
-                          <select
-                            value={newPatientBloodGroup}
-                            onChange={(e) => setNewPatientBloodGroup(e.target.value)}
-                            className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#00707E] font-medium text-slate-900"
-                          >
-                            <option value="A+">A+</option>
-                            <option value="A-">A-</option>
-                            <option value="B+">B+</option>
-                            <option value="B-">B-</option>
-                            <option value="AB+">AB+</option>
-                            <option value="AB-">AB-</option>
-                            <option value="O+">O+</option>
-                            <option value="O-">O-</option>
-                            <option value="Unknown">Unknown</option>
-                          </select>
-                        </div>
-                      </div>
-
-                      <div>
-                        <label className="block text-xs font-semibold text-slate-700 mb-1">
-                          Emergency Contact Phone <span className="text-red-500">*</span>
-                        </label>
-                        <input
-                          type="tel"
-                          required
-                          value={newPatientPhone}
-                          onChange={(e) => setNewPatientPhone(e.target.value)}
-                          placeholder="e.g. +91 98765 43210"
-                          className="w-full px-3.5 py-2 text-sm bg-white border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#00707E] font-medium text-slate-900"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block text-xs font-semibold text-slate-700 mb-1">
-                          Known Medical Notes / Allergies / Conditions
-                        </label>
-                        <textarea
-                          rows={2}
-                          value={newPatientNotes}
-                          onChange={(e) => setNewPatientNotes(e.target.value)}
-                          placeholder="e.g. Hypertension, asthma, penicillin allergy"
-                          className="w-full px-3.5 py-2 text-sm bg-white border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#00707E] font-medium text-slate-900"
-                        />
-                      </div>
-
-                      {/* Patient Consent Verification */}
-                      <div className="p-3.5 rounded-xl bg-teal-50/80 border border-teal-200 space-y-2">
-                        <div className="flex items-start gap-2.5">
-                          <input
-                            type="checkbox"
-                            id="newPatientConsent"
-                            required
-                            checked={newPatientConsent}
-                            onChange={(e) => {
-                              setNewPatientConsent(e.target.checked);
-                              if (linkPatientErrors.consent) setLinkPatientErrors((prev) => ({ ...prev, consent: '' }));
-                            }}
-                            className="mt-0.5 h-4 w-4 rounded border-teal-400 text-[#00707E] focus:ring-[#00707E]"
-                          />
-                          <label htmlFor="newPatientConsent" className="text-xs text-slate-700 leading-snug cursor-pointer">
-                            <span className="font-bold text-slate-900 block flex items-center gap-1">
-                              <ShieldCheck className="h-3.5 w-3.5 text-teal-700" />
-                              <span>Patient Consent Verification <span className="text-red-500">*</span></span>
-                            </span>
-                            I verify that explicit consent has been granted by the patient (or their legal guardian) authorizing me to access their medical dossier and coordinate emergency healthcare resources on CareBridge.
-                          </label>
-                        </div>
-                      </div>
-
-                      <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setIsLinkPatientModalOpen(false)}
-                          className="px-4 py-2 rounded-xl border border-slate-300 text-slate-700 hover:bg-slate-50 text-xs font-semibold transition-colors"
-                        >
-                          Cancel
-                        </button>
-                        <button
-                          type="submit"
-                          disabled={isLinkingSubmitting}
-                          className="px-5 py-2 rounded-xl bg-[#00707E] hover:bg-[#005B66] disabled:opacity-60 text-white text-xs font-bold transition-all shadow-sm flex items-center gap-1.5"
-                        >
-                          {isLinkingSubmitting ? (
-                            <div className="h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                          ) : (
-                            <>
-                              <Check className="h-4 w-4" />
-                              <span>Save & Link Patient</span>
-                            </>
-                          )}
-                        </button>
-                      </div>
-                    </form>
-                  </div>
+                  </form>
                 </div>
-              )}
-
-              {/* Patient & Family Attendant Operations Feedback Section */}
-              <div className="mt-8 max-w-5xl mx-auto w-full pb-6">
-                <FeedbackForm
-                  role="patient"
-                  roleLabel="Patient & Family Attendant"
-                  title="Patient & Attendant Experience Feedback"
-                  description="Help our coordination teams improve emergency intake, bed allocation, oxygen delivery, and ambulance dispatch."
-                />
               </div>
+            )}
 
-            </div>
-          );
-        })()
-      )}
-
-      {/* PATIENT TUTORIAL VIDEO MODAL */}
-      <PatientTutorialModal
-        isOpen={isPatientTutorialOpen}
-        onClose={() => setIsPatientTutorialOpen(false)}
-        onStartEmergency={() => {
-          setIsPatientTutorialOpen(false);
-          if (!currentUser) setCurrentScreen('login');
-          else setCurrentScreen('selection');
-        }}
-      />
-
-      {/* MULTI-USER ROLE HELP CENTER MODAL */}
-      {isHelpModalOpen && (
-        <HelpSection
-          isModal={true}
-          onClose={() => setIsHelpModalOpen(false)}
-          onOpenPatientTutorial={() => {
-            setIsHelpModalOpen(false);
-            setIsPatientTutorialOpen(true);
-          }}
-          onStartEmergency={() => {
-            setIsHelpModalOpen(false);
-            if (!currentUser) setCurrentScreen('login');
-            else setCurrentScreen('selection');
-          }}
-        />
+          </div>
+        );
+      })()
       )}
 
     </div>

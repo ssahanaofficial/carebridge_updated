@@ -25,7 +25,7 @@ import type { UserRole } from '../../types';
 interface AuthPageProps {
   initialMode?: 'login' | 'signup' | 'forgot';
   onNavigateHome: () => void;
-  onSuccessRedirect?: (role?: UserRole) => void;
+  onSuccessRedirect?: (role: UserRole) => void;
 }
 
 export const AuthPage: React.FC<AuthPageProps> = ({
@@ -33,7 +33,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
   onNavigateHome,
   onSuccessRedirect
 }) => {
-  const { login, signup, resetPassword, currentUser, error: authError } = useAuth();
+  const { login, signup, resetPassword, error: authError } = useAuth();
 
   const [mode, setMode] = useState<'login' | 'signup' | 'forgot'>(initialMode);
   const [showPassword, setShowPassword] = useState(false);
@@ -126,7 +126,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
 
     if (success) {
       if (onSuccessRedirect) {
-        onSuccessRedirect(currentUser?.role || undefined);
+        // Handled automatically by AuthContext
       }
     }
   };
@@ -170,13 +170,8 @@ export const AuthPage: React.FC<AuthPageProps> = ({
 
     if (result.success) {
       setSuccessNotice(
-        'Account created successfully! Redirecting to your dashboard...'
+        'Account created successfully! A verification email has been dispatched to your inbox.'
       );
-      setTimeout(() => {
-        if (onSuccessRedirect) {
-          onSuccessRedirect(selectedRole);
-        }
-      }, 1000);
     } else if (result.error) {
       setFormError(result.error);
     }
@@ -387,63 +382,6 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                     </>
                   )}
                 </button>
-
-                {/* Quick Role Fill Helper */}
-                <div className="pt-3 border-t border-slate-100">
-                  <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block mb-2 text-center">
-                    Quick Fill Test Accounts
-                  </span>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 text-[11px]">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setLoginEmail('sahana2006@gmail.com');
-                        setLoginPassword('password123');
-                        setFormError(null);
-                      }}
-                      className="px-2 py-1.5 bg-teal-50 hover:bg-teal-100 text-teal-800 rounded-lg font-medium border border-teal-200 text-center transition-colors truncate"
-                      title="Patient Attendant: sahana2006@gmail.com"
-                    >
-                      Patient Attendant
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setLoginEmail('bloodbank@carebridge.org');
-                        setLoginPassword('password123');
-                        setFormError(null);
-                      }}
-                      className="px-2 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-800 rounded-lg font-medium border border-rose-200 text-center transition-colors truncate"
-                      title="Blood Bank: bloodbank@carebridge.org"
-                    >
-                      Blood Bank
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setLoginEmail('oxygen@carebridge.org');
-                        setLoginPassword('password123');
-                        setFormError(null);
-                      }}
-                      className="px-2 py-1.5 bg-sky-50 hover:bg-sky-100 text-sky-800 rounded-lg font-medium border border-sky-200 text-center transition-colors truncate"
-                      title="Oxygen Depot: oxygen@carebridge.org"
-                    >
-                      Oxygen Depot
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setLoginEmail('hospital@carebridge.org');
-                        setLoginPassword('password123');
-                        setFormError(null);
-                      }}
-                      className="px-2 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-800 rounded-lg font-medium border border-blue-200 text-center transition-colors truncate"
-                      title="Hospital: hospital@carebridge.org"
-                    >
-                      Hospital
-                    </button>
-                  </div>
-                </div>
 
                 <div className="text-center text-xs text-slate-500 pt-2">
                   Don't have an account?{' '}

@@ -23,14 +23,10 @@ import {
   ChevronRight,
   ExternalLink,
   Sliders,
-  Send,
-  MessageSquare,
-  Star
+  Send
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { dataStore, getAllowedEmergencyCaseTransitions } from '../../services/dataService';
-import { FeedbackForm } from '../common/FeedbackForm';
-import { subscribeFeedbacks, type FeedbackItem } from '../../services/feedbackService';
 import type {
   UserProfile,
   EmergencyCase,
@@ -64,9 +60,7 @@ const formatDate = (date: string) => {
 
 export const AdminDashboard: React.FC = () => {
   const { currentUser } = useAuth();
-  const [activeTab, setActiveTab] = useState<'emergencies' | 'providers' | 'users' | 'analytics' | 'coordinator' | 'feedback'>('emergencies');
-  const [feedbacks, setFeedbacks] = useState<FeedbackItem[]>([]);
-  const [feedbackRoleFilter, setFeedbackRoleFilter] = useState<string>('all');
+  const [activeTab, setActiveTab] = useState<'emergencies' | 'providers' | 'users' | 'analytics' | 'coordinator'>('emergencies');
 
   // Core Data
   const [users, setUsers] = useState<UserProfile[]>([]);
@@ -135,7 +129,6 @@ export const AdminDashboard: React.FC = () => {
   useEffect(() => {
     loadData();
     const unsubscribeLocal = dataStore.subscribe(loadData);
-    const unsubscribeFeedbacks = subscribeFeedbacks(setFeedbacks);
     if (!currentUser || currentUser.role !== 'admin') {
       setCoordinatorCases([]);
       setCoordinatorRequests([]);
@@ -173,7 +166,6 @@ export const AdminDashboard: React.FC = () => {
     return () => {
       unsubscribe();
       unsubscribeLocal();
-      unsubscribeFeedbacks();
     };
   }, [currentUser?.uid, currentUser?.role, coordinatorRefresh]);
 
@@ -719,18 +711,6 @@ export const AdminDashboard: React.FC = () => {
         >
           <Activity className="w-4 h-4" />
           <span>Central Coordinator</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('feedback')}
-          className={`px-4 py-2 rounded-xl text-xs font-bold transition-colors flex items-center gap-2 whitespace-nowrap ${
-            activeTab === 'feedback'
-              ? 'bg-[#00707E] text-white shadow-xs'
-              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-          }`}
-        >
-          <MessageSquare className="w-4 h-4" />
-          <span>Feedback & Review ({feedbacks.length})</span>
         </button>
       </div>
 
@@ -1535,162 +1515,6 @@ export const AdminDashboard: React.FC = () => {
                 </div>
               )}
             </section>
-          </div>
-        </div>
-      )}
-
-      {/* TAB 5: MULTI-USER FEEDBACK & CONTINUOUS IMPROVEMENT */}
-      {activeTab === 'feedback' && (
-        <div className="space-y-6">
-          {/* Metrics summary */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-2xs">
-              <div className="text-xs font-bold text-slate-500 uppercase tracking-wider">Total Feedbacks</div>
-              <div className="text-2xl font-black text-slate-900 mt-1">{feedbacks.length}</div>
-              <div className="text-[11px] text-slate-400 mt-0.5">Across all platform user types</div>
-            </div>
-
-            <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-2xs">
-              <div className="text-xs font-bold text-slate-500 uppercase tracking-wider">Average Rating</div>
-              <div className="text-2xl font-black text-amber-500 mt-1 flex items-center gap-1.5">
-                <span>
-                  {feedbacks.length > 0
-                    ? (feedbacks.reduce((acc, f) => acc + (f.rating || 5), 0) / feedbacks.length).toFixed(1)
-                    : '5.0'}
-                </span>
-                <span className="text-xs font-normal text-slate-400">/ 5.0</span>
-              </div>
-              <div className="text-[11px] text-slate-400 mt-0.5">Calculated from verified submissions</div>
-            </div>
-
-            <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-2xs">
-              <div className="text-xs font-bold text-slate-500 uppercase tracking-wider">Critical Bottlenecks</div>
-              <div className="text-2xl font-black text-red-600 mt-1">
-                {feedbacks.filter((f) => f.urgency === 'high').length}
-              </div>
-              <div className="text-[11px] text-slate-400 mt-0.5">Marked for immediate review</div>
-            </div>
-          </div>
-
-          {/* Feedbacks Directory & Role Filter */}
-          <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-2xs space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
-              <div>
-                <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
-                  <MessageSquare className="w-5 h-5 text-teal-600" />
-                  Multi-User Role Feedback Stream
-                </h3>
-                <p className="text-xs text-slate-500">
-                  Review verified comments, issue reports, and ratings submitted by patients, hospitals, suppliers, and fleet operators.
-                </p>
-              </div>
-
-              {/* Role Filter */}
-              <div className="flex items-center gap-1.5 bg-slate-50 p-1 rounded-xl border border-slate-200 text-xs">
-                <span className="text-[11px] text-slate-500 font-medium px-1">Role Filter:</span>
-                <select
-                  value={feedbackRoleFilter}
-                  onChange={(e) => setFeedbackRoleFilter(e.target.value)}
-                  className="bg-white border border-slate-200 text-slate-800 text-xs font-semibold rounded-lg px-2 py-1 focus:outline-none"
-                >
-                  <option value="all">All Roles</option>
-                  <option value="patient">Patients & Attendants</option>
-                  <option value="hospital">Hospitals</option>
-                  <option value="bloodBank">Blood Banks</option>
-                  <option value="oxygenProvider">Oxygen Suppliers</option>
-                  <option value="ambulanceProvider">Ambulance Services</option>
-                  <option value="doctor">Doctors</option>
-                  <option value="admin">Administrators</option>
-                </select>
-              </div>
-            </div>
-
-            {/* List */}
-            {(() => {
-              const filtered = feedbacks.filter((f) => {
-                if (feedbackRoleFilter === 'all') return true;
-                if (feedbackRoleFilter === 'patient') {
-                  return f.role === 'patient' || f.role === 'patientAttendant';
-                }
-                return f.role === feedbackRoleFilter;
-              });
-
-              if (filtered.length === 0) {
-                return (
-                  <div className="p-8 text-center text-slate-400 text-xs bg-slate-50 rounded-xl border border-slate-100">
-                    No feedbacks submitted yet for the selected filter.
-                  </div>
-                );
-              }
-
-              return (
-                <div className="space-y-3">
-                  {filtered.map((fb) => (
-                    <div
-                      key={fb.id}
-                      className="p-4 rounded-xl border border-slate-200 bg-slate-50/50 space-y-2 text-xs"
-                    >
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="flex items-center gap-2">
-                          <span className="px-2 py-0.5 rounded-full font-mono font-bold text-[10px] bg-slate-200 text-slate-700">
-                            {fb.roleLabel || fb.role}
-                          </span>
-                          <span className="font-bold text-slate-900">{fb.subject}</span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          {/* Stars */}
-                          <div className="flex items-center gap-0.5 text-amber-400">
-                            {[1, 2, 3, 4, 5].map((s) => (
-                              <Star
-                                key={s}
-                                className={`w-3.5 h-3.5 ${
-                                  s <= (fb.rating || 5) ? 'fill-amber-400' : 'fill-slate-200 text-slate-200'
-                                }`}
-                              />
-                            ))}
-                          </div>
-
-                          {/* Urgency Pill */}
-                          <span
-                            className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                              fb.urgency === 'high'
-                                ? 'bg-red-100 text-red-700 border border-red-200'
-                                : fb.urgency === 'medium'
-                                ? 'bg-amber-100 text-amber-700 border border-amber-200'
-                                : 'bg-teal-100 text-teal-700 border border-teal-200'
-                            }`}
-                          >
-                            {fb.urgency === 'high' ? 'Critical Issue' : fb.urgency === 'medium' ? 'Workflow Delay' : 'Routine'}
-                          </span>
-                        </div>
-                      </div>
-
-                      <p className="text-slate-700 leading-relaxed font-medium">{fb.message}</p>
-
-                      <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-200/60 text-[11px] text-slate-500">
-                        <div>
-                          <span>From: <strong>{fb.userName || 'Anonymous'}</strong> ({fb.userEmail || 'unspecified'})</span>
-                          {fb.category && <span className="ml-2 px-1.5 py-0.5 rounded bg-white border border-slate-200">Category: {fb.category}</span>}
-                        </div>
-                        <div>
-                          <span>ID: {fb.id} • {new Date(fb.createdAt).toLocaleString()}</span>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              );
-            })()}
-          </div>
-
-          {/* Admin Feedback Form */}
-          <div className="pt-2">
-            <FeedbackForm
-              role="admin"
-              roleLabel="Central Coordinator / Admin"
-              title="Central Coordinator & Platform Oversight Feedback"
-              description="Document infrastructure performance, compliance observations, or regional escalation suggestions."
-            />
           </div>
         </div>
       )}

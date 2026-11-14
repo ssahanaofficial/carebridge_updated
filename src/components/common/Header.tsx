@@ -11,10 +11,7 @@ import {
   Truck,
   Stethoscope,
   ChevronDown,
-  Settings2,
-  HelpCircle,
-  Video,
-  Play
+  Settings2
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import {
@@ -36,20 +33,14 @@ import type { NotificationItem, UserRole } from '../../types';
 
 interface HeaderProps {
   onNavigateLanding?: () => void;
-  onNavigateDashboard?: () => void;
   onOpenLogin?: () => void;
   onOpenSignup?: () => void;
-  onOpenHelp?: () => void;
-  onOpenPatientTutorial?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
   onNavigateLanding,
-  onNavigateDashboard,
   onOpenLogin,
-  onOpenSignup,
-  onOpenHelp,
-  onOpenPatientTutorial
+  onOpenSignup
 }) => {
   const { currentUser, activeRole, logout, isAuthenticated } = useAuth();
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
@@ -200,59 +191,22 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
 
         {/* Right Side: Authenticated Controls vs Public Sign In */}
-        <div className="flex items-center gap-2 sm:gap-3">
-          {/* Quick Help & Patient Tutorial Triggers */}
-          {onOpenPatientTutorial && (
-            <button
-              onClick={onOpenPatientTutorial}
-              className="hidden md:flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-orange-700 bg-orange-50 hover:bg-orange-100 border border-orange-200 rounded-lg transition-colors"
-              title="Watch Patient Video Tutorial"
-            >
-              <Play className="w-3.5 h-3.5 fill-orange-600 text-orange-600" />
-              <span>Video Guide</span>
-            </button>
-          )}
-
-          {onOpenHelp && (
-            <button
-              onClick={onOpenHelp}
-              className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 text-xs font-semibold text-slate-700 hover:text-teal-700 hover:bg-teal-50 border border-slate-200 rounded-lg transition-colors"
-              title="Open Multi-User Help Center & Role Guides"
-            >
-              <HelpCircle className="w-4 h-4 text-teal-600" />
-              <span className="hidden sm:inline">Help & Guides</span>
-            </button>
-          )}
-
+        <div className="flex items-center gap-3">
           {isAuthenticated && currentUser && activeRole ? (
             <>
-              {/* Role Badge Indicator (Derived strictly from verified authenticated profile) */}
+              {/* Role Badge Indicator (Derived strictly from authenticated profile) */}
               {(() => {
                 const badge = getEffectiveRoleBadge();
                 if (!badge) return null;
                 return (
                   <div
                     className={`hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold shadow-xs ${badge.color}`}
-                    title={`Signed in as ${badge.label}`}
                   >
                     {badge.icon}
                     <span>{badge.label}</span>
                   </div>
                 );
               })()}
-
-              {/* My Dashboard button */}
-              {onNavigateDashboard && (
-                <button
-                  type="button"
-                  onClick={onNavigateDashboard}
-                  className="hidden md:flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-teal-800 bg-teal-50 hover:bg-teal-100 border border-teal-200 rounded-lg transition-colors"
-                  title="Open Dashboard"
-                >
-                  <Activity className="w-3.5 h-3.5 text-teal-600" />
-                  <span>Dashboard</span>
-                </button>
-              )}
 
               {/* Live Notifications Bell */}
               <div className="relative">

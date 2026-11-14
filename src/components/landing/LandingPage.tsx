@@ -20,27 +20,19 @@ import {
   ExternalLink,
   ChevronRight,
   Heart,
-  X,
-  Play,
-  Video,
-  HelpCircle
+  X
 } from 'lucide-react';
-import { HelpSection } from '../help/HelpSection';
 
 interface LandingPageProps {
   onStartEmergency: () => void;
   onOpenLogin: () => void;
   onOpenSignup: () => void;
-  onOpenPatientTutorial?: () => void;
-  onOpenProviderDashboard?: () => void;
 }
 
 export const LandingPage: React.FC<LandingPageProps> = ({
   onStartEmergency,
   onOpenLogin,
-  onOpenSignup,
-  onOpenPatientTutorial,
-  onOpenProviderDashboard
+  onOpenSignup
 }) => {
   const [showPrivacyModal, setShowPrivacyModal] = useState(false);
   const [showTermsModal, setShowTermsModal] = useState(false);
@@ -74,15 +66,11 @@ export const LandingPage: React.FC<LandingPageProps> = ({
           </div>
 
           {/* Navigation Links */}
-          <div className="hidden md:flex items-center gap-7 text-xs font-bold text-slate-600">
+          <div className="hidden md:flex items-center gap-8 text-xs font-bold text-slate-600">
             <a href="#home" className="hover:text-teal-600 transition-colors">Home</a>
             <a href="#about" className="hover:text-teal-600 transition-colors">About Us</a>
             <a href="#how-it-works" className="hover:text-teal-600 transition-colors">How It Works</a>
             <a href="#services" className="hover:text-teal-600 transition-colors">Services</a>
-            <a href="#help" className="hover:text-teal-600 transition-colors flex items-center gap-1">
-              <span>Help & Guides</span>
-              <span className="text-[9px] bg-teal-100 text-teal-800 font-bold px-1.5 py-0.2 rounded-full">New</span>
-            </a>
             <a href="#contact" className="hover:text-teal-600 transition-colors">Contact</a>
           </div>
 
@@ -134,19 +122,9 @@ export const LandingPage: React.FC<LandingPageProps> = ({
               <ArrowRight className="w-4 h-4" />
             </button>
 
-            {onOpenPatientTutorial && (
-              <button
-                onClick={onOpenPatientTutorial}
-                className="w-full sm:w-auto px-6 py-4 bg-teal-600/30 hover:bg-teal-600/50 text-teal-200 hover:text-white text-sm sm:text-base font-bold rounded-2xl border border-teal-400/40 backdrop-blur-md transition-all flex items-center justify-center gap-2"
-              >
-                <Play className="w-4 h-4 fill-teal-300" />
-                Watch Patient Video Guide
-              </button>
-            )}
-
             <button
-              onClick={onOpenProviderDashboard || onOpenLogin}
-              className="w-full sm:w-auto px-7 py-4 bg-white/10 hover:bg-white/20 text-white text-sm sm:text-base font-bold rounded-2xl border border-white/30 backdrop-blur-md transition-all flex items-center justify-center gap-2"
+              onClick={onOpenLogin}
+              className="w-full sm:w-auto px-8 py-4 bg-white/10 hover:bg-white/20 text-white text-sm sm:text-base font-bold rounded-2xl border border-white/30 backdrop-blur-md transition-all flex items-center justify-center gap-2"
             >
               <Building2 className="w-5 h-5 text-teal-300" />
               Healthcare Provider Portal
@@ -336,13 +314,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
         </div>
       </section>
 
-      {/* 7. MULTI-USER HELP CENTER & ROLE GUIDES */}
-      <HelpSection
-        onOpenPatientTutorial={onOpenPatientTutorial}
-        onStartEmergency={onStartEmergency}
-      />
-
-      {/* 8. CONTACT & HELPLINE SECTION */}
+      {/* 7. CONTACT & HELPLINE SECTION */}
       <section id="contact" className="py-16 bg-slate-50 border-b border-slate-200">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 space-y-12">
           <div className="text-center space-y-2 max-w-xl mx-auto">
@@ -400,12 +372,6 @@ export const LandingPage: React.FC<LandingPageProps> = ({
             </div>
 
             <div className="flex flex-wrap items-center gap-6 text-xs text-slate-400">
-              <a href="#help" className="hover:text-white transition-colors">Help Center & Guides</a>
-              {onOpenPatientTutorial && (
-                <button onClick={onOpenPatientTutorial} className="hover:text-white transition-colors">
-                  Patient Video Tutorial
-                </button>
-              )}
               <button onClick={() => setShowTermsModal(true)} className="hover:text-white transition-colors">
                 Terms of Service
               </button>

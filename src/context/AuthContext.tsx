@@ -4,7 +4,7 @@
  * session persistence, email verification, and role-based access control.
  */
 
-import React, { createContext, useContext, useState, useEffect, useRef, type ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
 import {
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
@@ -18,7 +18,7 @@ import {
   updateProfile as updateFirebaseProfile,
   type User as FirebaseUser
 } from 'firebase/auth';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { doc, getDoc, getDocFromServer, setDoc } from 'firebase/firestore';
 import { auth, db, isFirebaseConfigured } from '../config/firebase';
 import { dataStore } from '../services/dataService';
 import type { UserProfile, UserRole } from '../types';
@@ -64,28 +64,90 @@ interface AuthContextType {
   resetPassword: (email: string) => Promise<{ success: boolean; error?: string }>;
   logout: () => Promise<void>;
   updateProfile: (updates: Partial<UserProfile>) => Promise<void>;
-  switchRole: (role: UserRole) => void;
 }
 
 export const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-const getInferredRole = (email?: string, defaultRole: UserRole = 'patient'): UserRole => {
-  const emailLower = (email || '').toLowerCase();
-  if (emailLower.includes('bloodbank') || emailLower.includes('blood')) return 'bloodBank';
-  if (emailLower.includes('oxygen')) return 'oxygenProvider';
-  if (emailLower.includes('hospital')) return 'hospital';
-  if (emailLower.includes('ambulance')) return 'ambulanceProvider';
-  if (emailLower.includes('doctor')) return 'doctor';
-  if (emailLower.includes('admin')) return 'admin';
-  if (emailLower === 'sahana2006@gmail.com') return 'patientAttendant';
-  return defaultRole;
-};
+export interface ProfileResolutionResult {
+  profile: UserProfile | null;
+  error?: string;
+  isPermissionDenied?: boolean;
+}
 
-const getStoredRole = (uid: string): UserRole | null => {
+/**
+ * Resolves a user's profile from Firestore using a server-confirmed read first.
+ * Never silently defaults an authenticated user to 'patient'.
+ * Distinguishes between:
+ * - Document found (returns profile)
+ * - Document does not exist (returns null without error)
+ * - Permission denied / network failure (returns descriptive error)
+ */
+export const fetchUserProfileFromFirestore = async (uid: string): Promise<ProfileResolutionResult> => {
+  if (!isFirebaseConfigured || !db) {
+    // Development fallback when live Firebase credentials are not configured
+    const local = dataStore.getUser(uid);
+    return { profile: local || null };
+  }
+
   try {
-    return (localStorage.getItem(`carebridge_user_role_${uid}`) as UserRole) || null;
-  } catch {
-    return null;
+    const userDocRef = doc(db, 'users', uid);
+    let userSnap;
+
+    // Prefer server-confirmed read to guarantee fresh authoritative profile and avoid stale client cache
+    try {
+      userSnap = await getDocFromServer(userDocRef);
+    } catch (serverErr: any) {
+      if (serverErr?.code === 'permission-denied') {
+        console.error('[CareBridge Auth] Firestore permission denied for UID:', uid, serverErr);
+        return {
+          profile: null,
+          error: 'Access denied: Insufficient permissions to access account profile.',
+          isPermissionDenied: true
+        };
+      }
+      // If server read fails due to offline/network, attempt cache read via getDoc
+      console.warn('[CareBridge Auth] Server-confirmed getDoc note, falling back to cache:', serverErr);
+      try {
+        userSnap = await getDoc(userDocRef);
+      } catch (cacheErr: any) {
+        if (cacheErr?.code === 'permission-denied') {
+          return {
+            profile: null,
+            error: 'Access denied: Insufficient permissions to access account profile.',
+            isPermissionDenied: true
+          };
+        }
+        return {
+          profile: null,
+          error: 'Network error: Unable to reach database to verify profile. Please check your connection.'
+        };
+      }
+    }
+
+    if (userSnap && userSnap.exists()) {
+      const data = userSnap.data() as UserProfile;
+      const profile: UserProfile = {
+        ...data,
+        uid: data.uid || uid
+      };
+      return { profile };
+    }
+
+    // Document does not exist in Firestore
+    return { profile: null };
+  } catch (err: any) {
+    console.error('[CareBridge Auth] Unexpected error fetching user profile:', err);
+    if (err?.code === 'permission-denied') {
+      return {
+        profile: null,
+        error: 'Access denied: Insufficient permissions to access account profile.',
+        isPermissionDenied: true
+      };
+    }
+    return {
+      profile: null,
+      error: err?.message || 'Failed to retrieve account profile from server.'
+    };
   }
 };
 
@@ -94,7 +156,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
-  const pendingSignupRoleRef = useRef<{ role: UserRole; displayName: string; phone?: string; hospitalAffiliation?: string } | null>(null);
 
   // Sync Firebase Auth state on mount and reload
   useEffect(() => {
@@ -107,74 +168,65 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       setFirebaseUser(fbUser);
       if (fbUser) {
         try {
-          // Fetch user profile from Firestore users collection
-          let userProfile: UserProfile | null = null;
-          const pendingRole = pendingSignupRoleRef.current?.role || (localStorage.getItem('carebridge_pending_role') as UserRole) || null;
-          const storedRole = getStoredRole(fbUser.uid);
+          const { profile, error: resolutionError } = await fetchUserProfileFromFirestore(fbUser.uid);
 
-          if (isFirebaseConfigured && db) {
-            try {
-              const userSnap = await getDoc(doc(db, 'users', fbUser.uid));
-              if (userSnap.exists()) {
-                userProfile = userSnap.data() as UserProfile;
-              }
-            } catch (err) {
-              console.warn('[CareBridge Auth] Firestore fetch note:', err);
+          if (resolutionError) {
+            console.error('[CareBridge Auth] Profile resolution error on auth change:', resolutionError);
+            setError(resolutionError);
+            setCurrentUser(null);
+            setLoading(false);
+            return;
+          }
+
+          if (profile) {
+            // Authoritative server profile verified! Update local storage so stale cached roles under carebridge_unified_store_v2 cannot override
+            dataStore.saveUser(profile);
+
+            if (profile.email?.toLowerCase() === 'sahana2006@gmail.com') {
+              profile.displayName = profile.displayName || 'Sahana S.';
+              profile.role = 'patientAttendant';
             }
-          }
 
-          // If not in Firestore or offline, check local store
-          if (!userProfile) {
-            userProfile = dataStore.getUser(fbUser.uid) || null;
-          }
-
-          const targetRole = pendingRole || storedRole || getInferredRole(fbUser.email || '', userProfile?.role || 'patient');
-
-          // If new authenticated user without existing document, initialize profile
-          if (!userProfile) {
-            userProfile = {
-              uid: fbUser.uid,
-              email: fbUser.email || '',
-              displayName: pendingSignupRoleRef.current?.displayName || fbUser.displayName || fbUser.email?.split('@')[0] || 'CareBridge User',
-              role: targetRole,
-              phone: pendingSignupRoleRef.current?.phone || '',
-              city: 'Hubballi',
-              state: 'Karnataka',
-              isVerified: !DIRECTORY_ROLES.includes(targetRole),
-              isActive: true,
-              profileComplete: true,
-              hospitalAffiliation: pendingSignupRoleRef.current?.hospitalAffiliation,
-              createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString()
-            };
+            if (!profile.isActive) {
+              setError('This account has been suspended by the administrator.');
+              await signOut(auth);
+              setCurrentUser(null);
+              setLoading(false);
+              return;
+            }
 
             if (isFirebaseConfigured && db) {
               try {
-                await setDoc(doc(db, 'users', fbUser.uid), userProfile);
-              } catch (err) {
-                console.warn('[CareBridge Auth] Firestore profile create note:', err);
+                await syncProviderDirectory(profile);
+              } catch (directoryError) {
+                console.error('[CareBridge Auth] Provider directory sync failed:', directoryError);
               }
             }
-            dataStore.saveUser(userProfile);
-          } else {
-            // Apply role overrides if user previously selected or inferred from role email
-            const activeOverride = storedRole || pendingRole || getInferredRole(userProfile.email, userProfile.role);
-            if (activeOverride && userProfile.role !== activeOverride) {
-              userProfile.role = activeOverride;
-              dataStore.saveUser(userProfile);
-            }
-          }
 
-          if (userProfile && isFirebaseConfigured && db) {
-            try {
-              await syncProviderDirectory(userProfile);
-            } catch (directoryError) {
-              console.error('[CareBridge Auth] Provider directory sync failed:', directoryError);
+            setError(null);
+            setCurrentUser(profile);
+          } else {
+            // Profile does not exist in Firestore
+            if (!isFirebaseConfigured || !db) {
+              const localUser = dataStore.getUser(fbUser.uid);
+              if (localUser) {
+                setCurrentUser(localUser);
+                setError(null);
+              } else {
+                setError('Account profile not found.');
+                setCurrentUser(null);
+              }
+            } else {
+              // Existing authenticated account in Firebase Auth but missing Firestore profile
+              // Never grant admin privileges or overwrite with default patient
+              console.warn('[CareBridge Auth] Authenticated user has no Firestore profile in users collection:', fbUser.uid);
+              setError('Account profile not found in database. Please contact an administrator or complete registration.');
+              setCurrentUser(null);
             }
           }
-          setCurrentUser(userProfile);
         } catch (e: any) {
           console.error('[CareBridge Auth] Error resolving user profile:', e);
+          setError(e?.message || 'Error resolving user profile.');
           setCurrentUser(null);
         }
       } else {
@@ -201,43 +253,29 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         const cred = await signInWithEmailAndPassword(auth, email.trim(), pass);
         setFirebaseUser(cred.user);
 
-        // Fetch user doc from Firestore
-        let profile: UserProfile | null = null;
-        if (db) {
-          const userSnap = await getDoc(doc(db, 'users', cred.user.uid));
-          if (userSnap.exists()) {
-            profile = userSnap.data() as UserProfile;
-          }
+        // Fetch user profile from Firestore with server confirmation
+        const { profile, error: resolutionError } = await fetchUserProfileFromFirestore(cred.user.uid);
+
+        if (resolutionError) {
+          setError(resolutionError);
+          await signOut(auth);
+          setCurrentUser(null);
+          return false;
         }
 
         if (!profile) {
-          profile = dataStore.getUser(cred.user.uid) || {
-            uid: cred.user.uid,
-            email: cred.user.email || email,
-            displayName: cred.user.displayName || email.split('@')[0],
-            role: 'patient',
-            city: 'Hubballi',
-            state: 'Karnataka',
-            isVerified: true,
-            isActive: true,
-            profileComplete: true,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
-          };
-          if (db) {
-            await setDoc(doc(db, 'users', cred.user.uid), profile);
-          }
-          dataStore.saveUser(profile);
+          setError('Account profile not found in database. Please contact an administrator or complete registration.');
+          await signOut(auth);
+          setCurrentUser(null);
+          return false;
         }
 
-        if (profile) {
-          const stored = getStoredRole(cred.user.uid);
-          if (stored) {
-            profile.role = stored;
-          } else {
-            profile.role = getInferredRole(profile.email, profile.role);
-          }
-          dataStore.saveUser(profile);
+        // Overwrite any stale local cached profile with authoritative Firestore data
+        dataStore.saveUser(profile);
+
+        if (profile.email?.toLowerCase() === 'sahana2006@gmail.com') {
+          profile.displayName = profile.displayName || 'Sahana S.';
+          profile.role = 'patientAttendant';
         }
 
         if (!profile.isActive) {
@@ -252,6 +290,8 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         } catch (directoryError) {
           console.error('[CareBridge Auth] Provider directory sync failed:', directoryError);
         }
+
+        setError(null);
         setCurrentUser(profile);
         return true;
       }
@@ -306,16 +346,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         throw new Error('Administrative accounts cannot be registered publicly.');
       }
 
-      pendingSignupRoleRef.current = {
-        role: params.role,
-        displayName: params.displayName,
-        phone: params.phone,
-        hospitalAffiliation: params.hospitalAffiliation
-      };
-      try {
-        localStorage.setItem('carebridge_pending_role', params.role);
-      } catch (e) { }
-
       let uid = 'user-' + Date.now().toString().slice(-6);
 
       if (isFirebaseConfigured && auth) {
@@ -326,7 +356,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         // Update display name in Firebase Auth
         try {
           await updateFirebaseProfile(cred.user, { displayName: params.displayName.trim() });
-        } catch (e) { }
+        } catch (e) {}
 
         // Send Email Verification
         try {
@@ -389,11 +419,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         }
       }
 
-      try {
-        localStorage.setItem(`carebridge_user_role_${uid}`, params.role);
-        localStorage.removeItem('carebridge_pending_role');
-      } catch (e) { }
-
       dataStore.saveUser(newProfile);
       setCurrentUser(newProfile);
       return { success: true };
@@ -447,15 +472,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       if (isFirebaseConfigured && auth) {
         await signOut(auth);
       }
-      try {
-        localStorage.removeItem('carebridge_cases_list');
-        localStorage.removeItem('carebridge_active_case');
-        localStorage.removeItem('carebridge_pending_role');
-        if (currentUser?.uid) {
-          localStorage.removeItem(`carebridge_cases_list_${currentUser.uid}`);
-          localStorage.removeItem(`carebridge_active_case_${currentUser.uid}`);
-        }
-      } catch (e) { }
       setCurrentUser(null);
       setFirebaseUser(null);
     } catch (e) {
@@ -467,9 +483,11 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const updateProfile = async (updates: Partial<UserProfile>) => {
     if (!currentUser) return;
+    // Security check: strictly block role tampering via profile update
+    const { role: _ignoredRole, ...allowedUpdates } = updates;
     const updated: UserProfile = {
       ...currentUser,
-      ...updates,
+      ...allowedUpdates,
       updatedAt: new Date().toISOString()
     };
     setCurrentUser(updated);
@@ -485,26 +503,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     dataStore.saveUser(updated);
   };
 
-  const switchRole = (newRole: UserRole) => {
-    if (!currentUser) return;
-    const updated: UserProfile = {
-      ...currentUser,
-      role: newRole,
-      updatedAt: new Date().toISOString()
-    };
-    try {
-      localStorage.setItem(`carebridge_user_role_${currentUser.uid}`, newRole);
-    } catch (e) { }
-    dataStore.saveUser(updated);
-    setCurrentUser(updated);
-    if (isFirebaseConfigured && db) {
-      setDoc(doc(db, 'users', currentUser.uid), { role: newRole, updatedAt: updated.updatedAt }, { merge: true }).catch((err) => {
-        console.warn('[CareBridge Auth] switchRole Firestore update:', err);
-      });
-      syncProviderDirectory(updated).catch(() => { });
-    }
-  };
-
   return (
     <AuthContext.Provider
       value={{
@@ -518,8 +516,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         signup,
         resetPassword,
         logout,
-        updateProfile,
-        switchRole
+        updateProfile
       }}
     >
       {children}
@@ -538,9 +535,8 @@ export const defaultAuthContext: AuthContextType = {
   login: async () => false,
   signup: async () => ({ success: false, error: 'AuthProvider not initialized' }),
   resetPassword: async () => ({ success: false, error: 'AuthProvider not initialized' }),
-  logout: async () => { },
-  updateProfile: async () => { },
-  switchRole: () => { },
+  logout: async () => {},
+  updateProfile: async () => {},
 };
 
 export const useAuth = () => {

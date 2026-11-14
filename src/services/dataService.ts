@@ -628,10 +628,15 @@ class DataStore {
   public saveUser(user: UserProfile) {
     const idx = this.state.users.findIndex((u) => u.uid === user.uid);
     if (idx >= 0) {
-      this.state.users[idx] = { ...user, updatedAt: new Date().toISOString() };
+      this.state.users[idx] = { ...user, updatedAt: user.updatedAt || new Date().toISOString() };
     } else {
-      this.state.users.push(user);
+      this.state.users.push({ ...user });
     }
+    this.saveState();
+  }
+
+  public removeUser(uid: string) {
+    this.state.users = this.state.users.filter((u) => u.uid !== uid);
     this.saveState();
   }
 
@@ -2339,21 +2344,8 @@ export async function fetchCasesForAttendantFromFirestore(
       }
     }
 
-    // Merge with in-memory / local dataStore cases so locally created cases are never lost
-    const localCases = dataStore.getCasesForAttendant(attendantUid, linkedPatientUids);
-    localCases.forEach((c) => {
-      if (!casesMap.has(c.caseId)) {
-        casesMap.set(c.caseId, c);
-      }
-    });
-
-    const getTimeSafe = (val?: string) => {
-      if (!val) return 0;
-      const t = new Date(val).getTime();
-      return isNaN(t) ? 0 : t;
-    };
     const results = Array.from(casesMap.values()).sort(
-      (a, b) => getTimeSafe(b.createdAt || b.dateStr) - getTimeSafe(a.createdAt || a.dateStr)
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     );
     // sync to local store
     results.forEach((c) => dataStore.createCase(c));

@@ -17,7 +17,6 @@ import {
 import { useAuth } from '../../context/AuthContext';
 import { dataStore, respondToRequestInFirestore, subscribeRequestsForProviderFromFirestore } from '../../services/dataService';
 import { ProviderRequestsPanel } from '../common/ProviderRequestsPanel';
-import { FeedbackForm } from '../common/FeedbackForm';
 import type { AmbulanceProfile, ResourceRequest, AmbulanceTrip, AmbulanceTripStatus, AmbulanceVehicle } from '../../types';
 
 export const AmbulanceDashboard: React.FC = () => {
@@ -525,17 +524,6 @@ export const AmbulanceDashboard: React.FC = () => {
           </form>
         </div>
       )}
-
-      {/* Ambulance Fleet Operations Feedback Section */}
-      <div className="pt-6">
-        <FeedbackForm
-          role="ambulanceProvider"
-          roleLabel="Ambulance Service"
-          facilityName={profile?.providerName}
-          title="Ambulance Fleet & Dispatch Feedback"
-          description="Share feedback regarding emergency dispatch routing, GPS telemetry progression, attendant communication, or hospital dock handovers."
-        />
-      </div>
     </div>
   );
 };

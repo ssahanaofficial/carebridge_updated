@@ -16,7 +16,6 @@ import {
 import { useAuth } from '../../context/AuthContext';
 import { dataStore, respondToRequestInFirestore, subscribeRequestsForProviderFromFirestore } from '../../services/dataService';
 import { ProviderRequestsPanel } from '../common/ProviderRequestsPanel';
-import { FeedbackForm } from '../common/FeedbackForm';
 import type { BloodBankProfile, ResourceRequest, BloodGroup } from '../../types';
 
 export const BloodBankDashboard: React.FC = () => {
@@ -384,17 +383,6 @@ export const BloodBankDashboard: React.FC = () => {
             ))}
           </div>
         )}
-      </div>
-
-      {/* Blood Bank Operations Feedback Section */}
-      <div className="pt-4">
-        <FeedbackForm
-          role="bloodBank"
-          roleLabel="Blood Bank"
-          facilityName={profile?.bankName}
-          title="Blood Bank Operations & Stock Feedback"
-          description="Report inventory sync discrepancies, requisition bottlenecks, or suggestions for donor and unit allocation."
-        />
       </div>
     </div>
   );

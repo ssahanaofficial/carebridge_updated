@@ -14,7 +14,6 @@ import {
 import { useAuth } from '../../context/AuthContext';
 import { dataStore, respondToRequestInFirestore, subscribeRequestsForProviderFromFirestore } from '../../services/dataService';
 import { ProviderRequestsPanel } from '../common/ProviderRequestsPanel';
-import { FeedbackForm } from '../common/FeedbackForm';
 import type { OxygenProfile, ResourceRequest } from '../../types';
 
 export const OxygenDashboard: React.FC = () => {
@@ -384,17 +383,6 @@ export const OxygenDashboard: React.FC = () => {
                 ))}
               </div>
             )}
-          </div>
-
-          {/* Oxygen Depot Operations Feedback Section */}
-          <div className="pt-6">
-            <FeedbackForm
-              role="oxygenProvider"
-              roleLabel="Oxygen Supplier"
-              facilityName={profile?.providerName}
-              title="Medical Oxygen Supply & Logistics Feedback"
-              description="Share feedback on cylinder and concentrator requisition workflows, delivery coordination, and stock updates."
-            />
           </div>
         </div>
       </div>

@@ -15,7 +15,6 @@ import {
 import { useAuth } from '../../context/AuthContext';
 import { dataStore, getAssignedCaseForProviderFromFirestore } from '../../services/dataService';
 import { ProviderRequestsPanel } from '../common/ProviderRequestsPanel';
-import { FeedbackForm } from '../common/FeedbackForm';
 import type { EmergencyCase, ClinicalNote, ResourceRequest } from '../../types';
 
 export const DoctorDashboard: React.FC = () => {
@@ -317,17 +316,6 @@ export const DoctorDashboard: React.FC = () => {
             <div className="p-12 text-center text-slate-400">Select an emergency case to examine.</div>
           )}
         </div>
-      </div>
-
-      {/* Doctor & Medical Staff Clinical Feedback Section */}
-      <div className="pt-6">
-        <FeedbackForm
-          role="doctor"
-          roleLabel="Physician / Doctor"
-          facilityName={currentUser?.hospitalAffiliation}
-          title="Clinical Triage & Charting Feedback"
-          description="Provide feedback on patient vital signs visibility, clinical note charting, triage directives, and pre-admission coordination."
-        />
       </div>
     </div>
   );
