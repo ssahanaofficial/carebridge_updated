@@ -370,6 +370,24 @@ const normalizeTriagePriority = (priority?: string): EmergencyCase['triagePriori
   }
 };
 
+const getCasesStorageKey = (uid: string) => `carebridge_cases_list_${uid}`;
+
+const isCaseAuthorizedForUser = (
+  c: any,
+  userUid?: string | null,
+  linkedUids: string[] = []
+): boolean => {
+  if (!userUid || !c) return false;
+  if (c.attendantUid === userUid) return true;
+  if (c.attendant && c.attendant.uid === userUid) return true;
+  if (c.patientUid === userUid) return true;
+  if (c.patientId === userUid) return true;
+  if (c.requesterUid === userUid) return true;
+  if (c.patientUid && linkedUids.includes(c.patientUid)) return true;
+  if (c.patientId && linkedUids.includes(c.patientId)) return true;
+  return false;
+};
+
 function CareBridgeApp() {
   const { currentUser, activeRole, loading, logout } = useAuth();
 
@@ -520,16 +538,16 @@ function CareBridgeApp() {
   // Resource requests associated with active cases
   const [requestsList, setRequestsList] = useState<DataResourceRequest[]>([]);
 
-  // Multi-case list for Patient/Attendant Emergency Dashboard (Hydrated from persistent cache)
-  const [casesList, setCasesList] = useState<EmergencyCase[]>(() => {
+  // Multi-case list for Patient/Attendant Emergency Dashboard (Strictly user-scoped)
+  const [casesList, setCasesList] = useState<EmergencyCase[]>([]);
+
+  // One-time cleanup of legacy un-scoped storage keys
+  useEffect(() => {
     try {
-      const cached = localStorage.getItem('carebridge_cases_list');
-      if (cached) {
-        return JSON.parse(cached);
-      }
+      localStorage.removeItem('carebridge_cases_list');
+      localStorage.removeItem('carebridge_active_case');
     } catch (e) { }
-    return [];
-  });
+  }, []);
 
   // Dashboard Tab State: 'cases' | 'track' | 'patients' | 'notifications' | 'history' | 'profile'
   const [dashboardTab, setDashboardTab] = useState<'cases' | 'track' | 'patients' | 'notifications' | 'history' | 'profile'>('cases');
@@ -546,22 +564,38 @@ function CareBridgeApp() {
   // Effect: Sync authenticated attendant profile & fetch their authorized linked patients and cases
   useEffect(() => {
     if (!currentUser) {
-      try {
-        const cached = localStorage.getItem('carebridge_cases_list');
-        if (cached) {
-          setCasesList(JSON.parse(cached));
-        } else {
-          setCasesList([]);
-        }
-      } catch (e) {
-        setCasesList([]);
-      }
+      setCasesList([]);
       setLinkedPatients([]);
       setRequestsList([]);
+      setSelectedDashboardCase(null);
+      setSubmittedCase(null);
       return;
     }
 
     let isMounted = true;
+    const userStorageKey = getCasesStorageKey(currentUser.uid);
+
+    // Hydrate cached cases strictly belonging to this authenticated user
+    try {
+      localStorage.removeItem('carebridge_cases_list');
+      localStorage.removeItem('carebridge_active_case');
+      const cached = localStorage.getItem(userStorageKey);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed)) {
+          const userOnly = parsed.filter((c: EmergencyCase) =>
+            isCaseAuthorizedForUser(c, currentUser.uid, [])
+          );
+          setCasesList(userOnly);
+        } else {
+          setCasesList([]);
+        }
+      } else {
+        setCasesList([]);
+      }
+    } catch (e) {
+      setCasesList([]);
+    }
 
     // Populate default attendant details from authenticated user
     setAttendantName(currentUser.displayName || '');
@@ -605,80 +639,92 @@ function CareBridgeApp() {
         const authorizedCases = await fetchCasesForAttendantFromFirestore(currentUser.uid, linkedPatientUids);
         if (!isMounted) return;
 
-        // Retrieve local cases from cache to ensure newly submitted emergency cases are never lost
+        // Retrieve user-scoped local cases and strictly filter
         let localCachedCases: EmergencyCase[] = [];
         try {
-          const cachedStr = localStorage.getItem('carebridge_cases_list');
-          if (cachedStr) localCachedCases = JSON.parse(cachedStr);
+          const cachedStr = localStorage.getItem(userStorageKey);
+          if (cachedStr) {
+            const parsed = JSON.parse(cachedStr);
+            if (Array.isArray(parsed)) {
+              localCachedCases = parsed.filter((c: EmergencyCase) =>
+                isCaseAuthorizedForUser(c, currentUser.uid, linkedPatientUids)
+              );
+            }
+          }
         } catch (e) { }
 
         const allCasesMap = new Map<string, EmergencyCase>();
         localCachedCases.forEach((c) => allCasesMap.set(c.caseId, c));
 
-        // Map to EmergencyCase view objects safely
-        const formatted: EmergencyCase[] = authorizedCases.map((c) => {
-          let timeDisplay = c.createdAt || 'Just now';
-          let dateDisplay = c.dateStr || new Date().toLocaleDateString();
-          try {
-            if (c.createdAt) {
-              const d = new Date(c.createdAt);
-              if (!isNaN(d.getTime())) {
-                timeDisplay = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                dateDisplay = d.toLocaleDateString();
+        // Map to EmergencyCase view objects safely, strictly filtering
+        const formatted: EmergencyCase[] = authorizedCases
+          .filter((c) => isCaseAuthorizedForUser(c, currentUser.uid, linkedPatientUids))
+          .map((c) => {
+            let timeDisplay = c.createdAt || 'Just now';
+            let dateDisplay = c.dateStr || new Date().toLocaleDateString();
+            try {
+              if (c.createdAt) {
+                const d = new Date(c.createdAt);
+                if (!isNaN(d.getTime())) {
+                  timeDisplay = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                  dateDisplay = d.toLocaleDateString();
+                }
               }
-            }
-          } catch (e) { }
+            } catch (e) { }
 
-          return {
-            ...c,
-            caseId: c.caseId,
-            patientUid: c.patientUid || c.patientId || currentUser.uid,
-            status: (c.status === 'resolved' || c.status === 'cancelled' ? 'Completed' : 'Active') as any,
-            createdAt: timeDisplay,
-            dateStr: dateDisplay,
-            patientName: c.patientName,
-            patientAge: String(c.patientAge || 0),
-            patientGender: c.patientGender || 'Unknown',
-            patientBloodGroup: c.patientBloodGroup || 'Unknown',
-            patientCondition: c.conditionSummary || c.patientCondition || 'Emergency Medical Request',
-            conditionSummary: c.conditionSummary || c.patientCondition || 'Emergency Medical Request',
-            location: c.location || { address: c.incidentAddress || 'Hubballi', city: 'Hubballi' },
-            resourcesNeeded: c.resourcesNeeded || [],
-            attendantName: c.attendant?.name || currentUser.displayName || 'Sahana S.',
-            attendantRelation: c.attendant?.relation || 'Attendant',
-            attendantPhone: c.attendant?.phone || currentUser.phone || '',
-            incidentAddress: c.location?.address || c.incidentAddress || 'Hubballi',
-            triagePriority: normalizeTriagePriority(c.urgencyLevel || c.triagePriority),
-            emergencyDescription: c.conditionSummary || c.emergencyDescription || 'Emergency Medical Request',
-            providerName: c.matchedHospitalName || 'CareBridge Emergency Network',
-            providerDetails: 'Verified Emergency Response Network',
-            providerRating: '4.9 Stars',
-            resourcesList: (c.resourcesNeeded || []).map((r) =>
-              r === 'bed'
-                ? 'Hospital Beds'
-                : r === 'icu'
-                  ? 'ICU Facilities'
-                  : r === 'blood'
-                    ? 'Blood'
-                    : r === 'oxygen'
-                      ? 'Oxygen'
-                      : 'Ambulance Services'
-            ),
-            individualStatuses: (c.individualStatuses || []).map((s: any) => ({
-              resource: s.resource || s.serviceName || 'Healthcare Resource',
-              status: s.status || 'Active',
-              code: s.code || (['completed', 'Completed'].includes(s.status) ? 'completed' : ['accepted', 'reserved'].includes(s.status) ? 'reserved' : 'pending'),
-              detail: s.detail || 'Processing request',
-              updatedAt: s.updatedAt || 'Just now'
-            }))
-          };
-        });
+            return {
+              ...c,
+              caseId: c.caseId,
+              patientUid: c.patientUid || c.patientId || currentUser.uid,
+              status: (c.status === 'resolved' || c.status === 'cancelled' ? 'Completed' : 'Active') as any,
+              createdAt: timeDisplay,
+              dateStr: dateDisplay,
+              patientName: c.patientName,
+              patientAge: String(c.patientAge || 0),
+              patientGender: c.patientGender || 'Unknown',
+              patientBloodGroup: c.patientBloodGroup || 'Unknown',
+              patientCondition: c.conditionSummary || c.patientCondition || 'Emergency Medical Request',
+              conditionSummary: c.conditionSummary || c.patientCondition || 'Emergency Medical Request',
+              location: c.location || { address: c.incidentAddress || 'Hubballi', city: 'Hubballi' },
+              resourcesNeeded: c.resourcesNeeded || [],
+              attendantName: c.attendant?.name || currentUser.displayName || c.patientName || 'Patient Attendant',
+              attendantRelation: c.attendant?.relation || 'Attendant',
+              attendantPhone: c.attendant?.phone || currentUser.phone || '',
+              incidentAddress: c.location?.address || c.incidentAddress || 'Hubballi',
+              triagePriority: normalizeTriagePriority(c.urgencyLevel || c.triagePriority),
+              emergencyDescription: c.conditionSummary || c.emergencyDescription || 'Emergency Medical Request',
+              providerName: c.matchedHospitalName || 'CareBridge Emergency Network',
+              providerDetails: 'Verified Emergency Response Network',
+              providerRating: '4.9 Stars',
+              resourcesList: (c.resourcesNeeded || []).map((r) =>
+                r === 'bed'
+                  ? 'Hospital Beds'
+                  : r === 'icu'
+                    ? 'ICU Facilities'
+                    : r === 'blood'
+                      ? 'Blood'
+                      : r === 'oxygen'
+                        ? 'Oxygen'
+                        : 'Ambulance Services'
+              ),
+              individualStatuses: (c.individualStatuses || []).map((s: any) => ({
+                resource: s.resource || s.serviceName || 'Healthcare Resource',
+                status: s.status || 'Active',
+                code: s.code || (['completed', 'Completed'].includes(s.status) ? 'completed' : ['accepted', 'reserved'].includes(s.status) ? 'reserved' : 'pending'),
+                detail: s.detail || 'Processing request',
+                updatedAt: s.updatedAt || 'Just now'
+              }))
+            };
+          });
 
         formatted.forEach((c) => allCasesMap.set(c.caseId, c));
-        const mergedCases = Array.from(allCasesMap.values());
+        const mergedCases = Array.from(allCasesMap.values()).filter((c) =>
+          isCaseAuthorizedForUser(c, currentUser.uid, linkedPatientUids)
+        );
         setCasesList(mergedCases);
         try {
-          localStorage.setItem('carebridge_cases_list', JSON.stringify(mergedCases));
+          localStorage.setItem(userStorageKey, JSON.stringify(mergedCases));
+          localStorage.removeItem('carebridge_cases_list');
         } catch (e) { }
 
         // 3. Fetch resource requests for these authorized cases
@@ -702,76 +748,79 @@ function CareBridgeApp() {
     // Set up real-time Firestore onSnapshot listener for emergency cases
     const unsubCases = subscribeCasesForAttendantFromFirestore(currentUser.uid, [], (cases) => {
       if (!isMounted) return;
-      if (cases.length > 0) {
-        const formatted: EmergencyCase[] = cases.map((c) => {
-          let timeDisplay = c.createdAt || 'Just now';
-          let dateDisplay = c.dateStr || new Date().toLocaleDateString();
-          try {
-            if (c.createdAt) {
-              const d = new Date(c.createdAt);
-              if (!isNaN(d.getTime())) {
-                timeDisplay = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                dateDisplay = d.toLocaleDateString();
-              }
+      const validCases = (cases || []).filter((c) =>
+        isCaseAuthorizedForUser(c, currentUser.uid, linkedPatients.map((l) => l.patientUid))
+      );
+      const formatted: EmergencyCase[] = validCases.map((c) => {
+        let timeDisplay = c.createdAt || 'Just now';
+        let dateDisplay = c.dateStr || new Date().toLocaleDateString();
+        try {
+          if (c.createdAt) {
+            const d = new Date(c.createdAt);
+            if (!isNaN(d.getTime())) {
+              timeDisplay = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+              dateDisplay = d.toLocaleDateString();
             }
-          } catch (e) { }
+          }
+        } catch (e) { }
 
-          return {
-            ...c,
-            caseId: c.caseId,
-            patientUid: c.patientUid || c.patientId || currentUser.uid,
-            status: (c.status === 'resolved' || c.status === 'cancelled' ? 'Completed' : 'Active') as any,
-            createdAt: timeDisplay,
-            dateStr: dateDisplay,
-            patientName: c.patientName,
-            patientAge: String(c.patientAge || 0),
-            patientGender: c.patientGender || 'Unknown',
-            patientBloodGroup: c.patientBloodGroup || 'Unknown',
-            patientCondition: c.conditionSummary || c.patientCondition || 'Emergency Medical Request',
-            conditionSummary: c.conditionSummary || c.patientCondition || 'Emergency Medical Request',
-            location: c.location || { address: c.incidentAddress || 'Hubballi', city: 'Hubballi' },
-            resourcesNeeded: c.resourcesNeeded || [],
-            attendantName: c.attendant?.name || currentUser.displayName || 'Sahana S.',
-            attendantRelation: c.attendant?.relation || 'Attendant',
-            attendantPhone: c.attendant?.phone || currentUser.phone || '',
-            incidentAddress: c.location?.address || c.incidentAddress || 'Hubballi',
-            triagePriority: normalizeTriagePriority(c.urgencyLevel || c.triagePriority),
-            emergencyDescription: c.conditionSummary || c.emergencyDescription || 'Emergency Medical Request',
-            providerName: c.matchedHospitalName || 'CareBridge Emergency Network',
-            providerDetails: 'Verified Emergency Response Network',
-            providerRating: '4.9 Stars',
-            resourcesList: (c.resourcesNeeded || []).map((r) =>
-              r === 'bed'
-                ? 'Hospital Beds'
-                : r === 'icu'
-                  ? 'ICU Facilities'
-                  : r === 'blood'
-                    ? 'Blood'
-                    : r === 'oxygen'
-                      ? 'Oxygen'
-                      : 'Ambulance Services'
-            ),
-            individualStatuses: (c.individualStatuses || []).map((s: any) => ({
-              resource: s.resource || s.serviceName || 'Healthcare Resource',
-              status: s.status || 'Active',
-              code: s.code || (['completed', 'Completed'].includes(s.status) ? 'completed' : ['accepted', 'reserved'].includes(s.status) ? 'reserved' : 'pending'),
-              detail: s.detail || 'Processing request',
-              updatedAt: s.updatedAt || 'Just now'
-            }))
-          };
-        });
+        return {
+          ...c,
+          caseId: c.caseId,
+          patientUid: c.patientUid || c.patientId || currentUser.uid,
+          status: (c.status === 'resolved' || c.status === 'cancelled' ? 'Completed' : 'Active') as any,
+          createdAt: timeDisplay,
+          dateStr: dateDisplay,
+          patientName: c.patientName,
+          patientAge: String(c.patientAge || 0),
+          patientGender: c.patientGender || 'Unknown',
+          patientBloodGroup: c.patientBloodGroup || 'Unknown',
+          patientCondition: c.conditionSummary || c.patientCondition || 'Emergency Medical Request',
+          conditionSummary: c.conditionSummary || c.patientCondition || 'Emergency Medical Request',
+          location: c.location || { address: c.incidentAddress || 'Hubballi', city: 'Hubballi' },
+          resourcesNeeded: c.resourcesNeeded || [],
+          attendantName: c.attendant?.name || currentUser.displayName || c.patientName || 'Patient Attendant',
+          attendantRelation: c.attendant?.relation || 'Attendant',
+          attendantPhone: c.attendant?.phone || currentUser.phone || '',
+          incidentAddress: c.location?.address || c.incidentAddress || 'Hubballi',
+          triagePriority: normalizeTriagePriority(c.urgencyLevel || c.triagePriority),
+          emergencyDescription: c.conditionSummary || c.emergencyDescription || 'Emergency Medical Request',
+          providerName: c.matchedHospitalName || 'CareBridge Emergency Network',
+          providerDetails: 'Verified Emergency Response Network',
+          providerRating: '4.9 Stars',
+          resourcesList: (c.resourcesNeeded || []).map((r) =>
+            r === 'bed'
+              ? 'Hospital Beds'
+              : r === 'icu'
+                ? 'ICU Facilities'
+                : r === 'blood'
+                  ? 'Blood'
+                  : r === 'oxygen'
+                    ? 'Oxygen'
+                    : 'Ambulance Services'
+          ),
+          individualStatuses: (c.individualStatuses || []).map((s: any) => ({
+            resource: s.resource || s.serviceName || 'Healthcare Resource',
+            status: s.status || 'Active',
+            code: s.code || (['completed', 'Completed'].includes(s.status) ? 'completed' : ['accepted', 'reserved'].includes(s.status) ? 'reserved' : 'pending'),
+            detail: s.detail || 'Processing request',
+            updatedAt: s.updatedAt || 'Just now'
+          }))
+        };
+      });
 
-        setCasesList((prev) => {
-          const map = new Map<string, EmergencyCase>();
-          prev.forEach((c) => map.set(c.caseId, c));
-          formatted.forEach((c) => map.set(c.caseId, c));
-          const updated = Array.from(map.values());
-          try {
-            localStorage.setItem('carebridge_cases_list', JSON.stringify(updated));
-          } catch (e) { }
-          return updated;
-        });
-      }
+      setCasesList((prev) => {
+        const map = new Map<string, EmergencyCase>();
+        prev
+          .filter((c) => isCaseAuthorizedForUser(c, currentUser.uid, linkedPatients.map((l) => l.patientUid)))
+          .forEach((c) => map.set(c.caseId, c));
+        formatted.forEach((c) => map.set(c.caseId, c));
+        const updated = Array.from(map.values());
+        try {
+          localStorage.setItem(userStorageKey, JSON.stringify(updated));
+        } catch (e) { }
+        return updated;
+      });
     });
 
     return () => {
@@ -1303,14 +1352,20 @@ function CareBridgeApp() {
       setCasesList((prev) => {
         const updated = [newCaseData, ...prev.filter((c) => c.caseId !== newCaseData.caseId)];
         try {
-          localStorage.setItem('carebridge_cases_list', JSON.stringify(updated));
+          if (currentUser?.uid) {
+            localStorage.setItem(getCasesStorageKey(currentUser.uid), JSON.stringify(updated));
+          }
+          localStorage.removeItem('carebridge_cases_list');
         } catch (storageError) {
           console.warn('Could not cache submitted case locally:', storageError);
         }
         return updated;
       });
       try {
-        localStorage.setItem('carebridge_active_case', JSON.stringify(newCaseData));
+        if (currentUser?.uid) {
+          localStorage.setItem(`carebridge_active_case_${currentUser.uid}`, JSON.stringify(newCaseData));
+        }
+        localStorage.removeItem('carebridge_active_case');
       } catch (storageError) {
         console.warn('Could not cache active case locally:', storageError);
       }
@@ -1409,9 +1464,9 @@ function CareBridgeApp() {
       const linkId = `${currentUser?.uid || 'att'}_${pUid}`;
       const newLink: PatientLink = {
         id: linkId,
-        attendantUid: currentUser?.uid || 'patient-demo-01',
-        attendantName: currentUser?.displayName || 'Sahana S.',
-        attendantEmail: currentUser?.email || 'sahana2006@gmail.com',
+        attendantUid: currentUser?.uid || '',
+        attendantName: currentUser?.displayName || currentUser?.email?.split('@')[0] || 'CareBridge Attendant',
+        attendantEmail: currentUser?.email || '',
         patientUid: pUid,
         patientName: newPatientName.trim(),
         relationship: newPatientRelation.trim(),
@@ -3006,7 +3061,7 @@ function CareBridgeApp() {
           patientGender: linkedPatients[0]?.patientGender || 'Other',
           patientBloodGroup: linkedPatients[0]?.patientBloodGroup || 'Unknown',
           patientCondition: 'Emergency medical intake',
-          attendantName: currentUser?.displayName || 'Sahana S.',
+          attendantName: currentUser?.displayName || currentUser?.email?.split('@')[0] || 'Patient Attendant',
           attendantRelation: linkedPatients[0]?.relationship || 'Attendant',
           attendantPhone: linkedPatients[0]?.emergencyContactPhone || '+91 98451 98765',
           incidentAddress: searchLocation || 'Plot 42, Vidyanagar Main Road, Hubballi, Karnataka',
@@ -3514,7 +3569,7 @@ function CareBridgeApp() {
                 <div className="flex items-center gap-2 sm:gap-3">
                   <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-100 border border-slate-200 text-xs text-slate-700">
                     <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
-                    <span className="font-semibold text-slate-800">{currentUser?.displayName || 'Sahana S.'}</span>
+                    <span className="font-semibold text-slate-800">{currentUser?.displayName || currentUser?.email?.split('@')[0] || 'CareBridge User'}</span>
                     <span className="text-slate-400">•</span>
                     <span className="text-slate-500">Patient Attendant</span>
                   </div>
@@ -3549,7 +3604,7 @@ function CareBridgeApp() {
                         <span>Verified Attendant Command Center • Hubballi Zone</span>
                       </div>
                       <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight">
-                        Welcome back, {currentUser?.displayName || 'Sahana S.'}
+                        Welcome back, {currentUser?.displayName || currentUser?.email?.split('@')[0] || 'User'}
                       </h1>
                       <p className="text-xs sm:text-sm text-teal-100/90 mt-1 max-w-2xl">
                         Coordinate with authorized linked patients, dispatched ambulance units, and track hospital bed and ICU allocations in real-time.
@@ -4118,7 +4173,7 @@ function CareBridgeApp() {
                           <span>Authorized Linked Patients</span>
                         </h2>
                         <p className="text-xs text-slate-500 mt-0.5">
-                          Family members and patients authorized under your attendant profile ({currentUser?.displayName || 'Sahana S.'})
+                          Family members and patients authorized under your attendant profile ({currentUser?.displayName || currentUser?.email || 'Your Profile'})
                         </p>
                       </div>
                       <button
@@ -4563,8 +4618,8 @@ function CareBridgeApp() {
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
                       <div className="p-4 rounded-xl border border-slate-200 bg-slate-50 space-y-1">
                         <span className="text-slate-400 uppercase font-bold text-[10px]">Registered Attendant</span>
-                        <p className="font-bold text-slate-900 text-sm">{currentUser?.displayName || 'Sahana S.'}</p>
-                        <p className="text-slate-600">Email: {currentUser?.email || 'sahana2006@gmail.com'}</p>
+                        <p className="font-bold text-slate-900 text-sm">{currentUser?.displayName || currentUser?.email?.split('@')[0] || 'CareBridge User'}</p>
+                        <p className="text-slate-600">Email: {currentUser?.email || 'N/A'}</p>
                         <p className="text-[#00707E] font-bold">Role: Patient Attendant</p>
                       </div>
 
@@ -4754,7 +4809,7 @@ function CareBridgeApp() {
                             Link Patient to Your Profile
                           </h3>
                           <p className="text-xs text-slate-500">
-                            Attendant: {currentUser?.displayName || 'Sahana S.'} ({currentUser?.email || 'sahana2006@gmail.com'})
+                            Attendant: {currentUser?.displayName || currentUser?.email?.split('@')[0] || 'CareBridge User'} ({currentUser?.email || ''})
                           </p>
                         </div>
                       </div>

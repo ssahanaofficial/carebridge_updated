@@ -1135,6 +1135,76 @@ async function runTests() {
   }
 
   // ----------------------------------------------------
+  // TEST 23: Fresh User Registration Isolation (No cross-account dashboard leakage)
+  // ----------------------------------------------------
+  try {
+    const newAttendantUid = 'attendant-sahaan-new-99';
+    const sahaanProfile: UserProfile = {
+      uid: newAttendantUid,
+      email: 'saaa@gmail.com',
+      displayName: 'sahaan',
+      role: 'patientAttendant',
+      isActive: true,
+      isVerified: true,
+      profileComplete: true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    dataStore.saveUser(sahaanProfile);
+
+    // Seed previous user's cases into store
+    dataStore.createCase({
+      caseId: 'CB-1794631563625-7771',
+      patientUid: 'user-prev-saha',
+      attendantUid: 'user-prev-saha',
+      patientName: 'saha',
+      patientAge: 45,
+      patientGender: 'Male',
+      patientBloodGroup: 'A-',
+      conditionSummary: 'danger',
+      urgencyLevel: 'immediate',
+      resourcesNeeded: ['bed', 'icu', 'blood'],
+      location: { city: 'Hubballi', address: 'Main Road', state: 'Karnataka' },
+      status: 'active',
+      requestCount: 3,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+
+    dataStore.createCase({
+      caseId: 'CB-2026-1463',
+      patientUid: 'user-prev-sahana',
+      attendantUid: 'user-prev-sahana',
+      patientName: 'SAHANA S',
+      patientAge: 20,
+      patientGender: 'Female',
+      patientBloodGroup: 'B+',
+      conditionSummary: 'blood lose',
+      urgencyLevel: 'immediate',
+      resourcesNeeded: ['bed', 'blood'],
+      location: { city: 'Hubballi', address: 'City Hospital', state: 'Karnataka' },
+      status: 'active',
+      requestCount: 2,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+
+    // Fresh user queries their cases
+    const sahaanCases = dataStore.getCasesForAttendant(newAttendantUid, []);
+    const leakedCaseIds = sahaanCases.map((c) => c.caseId);
+
+    if (sahaanCases.length === 0) {
+      record('TEST-23', 'Fresh User Dashboard Case Isolation', 'PASS',
+        `Completely new user "sahaan" retrieved 0 cases. Previous user cases (CB-1794631563625-7771, CB-2026-1463) are strictly isolated.`);
+    } else {
+      record('TEST-23', 'Fresh User Dashboard Case Isolation', 'FAIL',
+        `Data leak detected for fresh user! Retrieved cases: ${leakedCaseIds.join(', ')}`);
+    }
+  } catch (err: any) {
+    record('TEST-23', 'Fresh User Dashboard Case Isolation', 'FAIL', err.message);
+  }
+
+  // ----------------------------------------------------
   // SUMMARY
   // ----------------------------------------------------
   console.log('\n====================================================');

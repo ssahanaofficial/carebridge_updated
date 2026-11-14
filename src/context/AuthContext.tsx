@@ -447,6 +447,15 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       if (isFirebaseConfigured && auth) {
         await signOut(auth);
       }
+      try {
+        localStorage.removeItem('carebridge_cases_list');
+        localStorage.removeItem('carebridge_active_case');
+        localStorage.removeItem('carebridge_pending_role');
+        if (currentUser?.uid) {
+          localStorage.removeItem(`carebridge_cases_list_${currentUser.uid}`);
+          localStorage.removeItem(`carebridge_active_case_${currentUser.uid}`);
+        }
+      } catch (e) { }
       setCurrentUser(null);
       setFirebaseUser(null);
     } catch (e) {
