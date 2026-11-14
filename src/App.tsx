@@ -766,9 +766,9 @@ function CareBridgeApp() {
     patientGender,
     patientBloodGroup,
     patientCondition: patientCondition.trim(),
-    attendantName: attendantName.trim(),
+    attendantName: (attendantName || contactPerson || patientName).trim(),
     attendantRelation,
-    attendantPhone: attendantPhone.trim().replace(/[\s().-]/g, ''),
+    attendantPhone: (attendantPhone || contactPhone).trim().replace(/[\s().-]/g, ''),
     incidentAddress: incidentAddress.trim(),
     emergencyDescription: emergencyDescription.trim(),
     selectedResources,
@@ -858,26 +858,6 @@ function CareBridgeApp() {
       errors.authorization = 'Sign in with a patient or authorized attendant account to submit an emergency case.';
     }
 
-    if (!attendantName.trim()) {
-      errors.attendantName = 'Attendant full name is required';
-    }
-    const normalizedAttendantPhone = attendantPhone.trim().replace(/[\s().-]/g, '');
-    if (!/^\+?[1-9]\d{7,14}$/.test(normalizedAttendantPhone)) {
-      errors.attendantPhone = 'Please enter a valid contact phone number';
-    }
-    if (!attendantRelation.trim()) {
-      errors.attendantRelation = 'Please select the attendant relationship';
-    }
-    if (
-      isPatientSelf && attendantRelation !== 'Self' &&
-      attendantConsentFingerprint !== getAttendantConsentFingerprint()
-    ) {
-      errors.attendantConsent = 'Confirm that the patient has consented to this submission';
-    }
-    if (!incidentAddress.trim()) {
-      errors.incidentAddress = 'Incident address / landmark is required';
-    }
-
     // 2. Emergency Information
     if (!emergencyDescription.trim()) {
       errors.emergencyDescription = 'Please describe the emergency condition';
@@ -889,15 +869,28 @@ function CareBridgeApp() {
     }
 
     // 4. Contact Details
-    const effectiveContactPerson = contactPerson.trim() || attendantName.trim() || patientName.trim();
-    const effectiveContactPhone = contactPhone.trim() || attendantPhone.trim() || currentUser?.phone || '';
+    const effectiveContactPerson = contactPerson.trim() || attendantName.trim() || patientName.trim() || currentUser?.displayName || '';
+    const effectiveContactPhone = contactPhone.trim() || attendantPhone.trim() || patientPhone.trim() || currentUser?.phone || '';
     const normalizedContactPhone = effectiveContactPhone.replace(/[\s().-]/g, '');
     if (!effectiveContactPerson) {
       errors.contactPerson = 'Contact person name is required';
     }
     if (!/^\+?[1-9]\d{7,14}$/.test(normalizedContactPhone)) {
-      errors.contactPhone = 'Please enter a valid emergency contact phone number';
+      errors.contactPhone = 'Please enter a valid emergency contact phone number (at least 8 digits)';
     }
+    if (!attendantRelation.trim()) {
+      errors.attendantRelation = 'Please select the contact relationship';
+    }
+    if (
+      isPatientSelf && attendantRelation !== 'Self' &&
+      !attendantConsentFingerprint
+    ) {
+      errors.attendantConsent = 'Confirm that the patient has consented to this submission';
+    }
+
+    const finalAttendantName = isAttendantRole ? (attendantName.trim() || effectiveContactPerson) : (effectiveContactPerson || patientName.trim());
+    const finalAttendantPhone = normalizedContactPhone;
+    const finalAttendantRelation = attendantRelation.trim() || (isPatientSelf ? 'Self' : 'Attendant');
 
     // 5. Active Resources / Services
     const activeResources: string[] = [];
@@ -1046,7 +1039,7 @@ function CareBridgeApp() {
         requesterUid,
         requesterRole,
         createdBy: isAttendantRole ? 'attendant' : 'patient',
-        attendantUid: isAttendantRole ? requesterUid : undefined,
+        ...(isAttendantRole ? { attendantUid: requesterUid } : {}),
         status: 'Submitted',
         createdAt: nowTime,
         dateStr: nowDateStr,
@@ -1055,9 +1048,9 @@ function CareBridgeApp() {
         patientGender,
         patientBloodGroup,
         patientCondition: patientCondition.trim(),
-        attendantName: attendantName.trim(),
-        attendantRelation,
-        attendantPhone: normalizedAttendantPhone,
+        attendantName: finalAttendantName,
+        attendantRelation: finalAttendantRelation,
+        attendantPhone: finalAttendantPhone,
         incidentAddress: incidentAddress.trim(),
         triagePriority,
         emergencyDescription: emergencyDescription.trim(),
@@ -1143,10 +1136,10 @@ function CareBridgeApp() {
           state: currentUser.state || 'Karnataka'
         },
         attendant: {
-          uid: isAttendantRole ? requesterUid : undefined,
-          name: attendantName.trim(),
-          relation: attendantRelation,
-          phone: normalizedAttendantPhone
+          ...(isAttendantRole ? { uid: requesterUid } : {}),
+          name: finalAttendantName,
+          relation: finalAttendantRelation,
+          phone: finalAttendantPhone
         },
         ...(isAttendantRole ? {
           createdBy: 'attendant',
@@ -1222,6 +1215,8 @@ function CareBridgeApp() {
       setPatientPhone(currentUser.phone || '');
       setContactPerson(currentUser.displayName || '');
       setContactPhone(currentUser.phone || '');
+      setAttendantName(currentUser.displayName || '');
+      setAttendantPhone(currentUser.phone || '');
       setAttendantRelation('Self');
     } else {
       const linked = linkedPatients.find((l) => l.id === selectedLinkedPatientId) || linkedPatients[0];
@@ -1235,6 +1230,8 @@ function CareBridgeApp() {
         setAttendantRelation(linked.relationship || 'Attendant');
         setContactPerson(currentUser?.displayName || '');
         setContactPhone(currentUser?.phone || linked.emergencyContactPhone || '');
+        setAttendantName(currentUser?.displayName || '');
+        setAttendantPhone(currentUser?.phone || linked.emergencyContactPhone || '');
       } else {
         setPatientName('');
         setPatientId('');
@@ -1245,12 +1242,11 @@ function CareBridgeApp() {
         setAttendantRelation('Attendant');
         setContactPerson(currentUser?.displayName || '');
         setContactPhone(currentUser?.phone || '');
+        setAttendantName(currentUser?.displayName || '');
+        setAttendantPhone(currentUser?.phone || '');
       }
     }
     setPatientCondition('');
-    setAttendantName('');
-    setAttendantRelation('Self');
-    setAttendantPhone('');
     setAttendantConsentFingerprint(null);
     setEmergencyDescription('');
     setAdditionalNotes('');
@@ -2505,6 +2501,7 @@ function CareBridgeApp() {
                           value={contactPerson}
                           onChange={(e) => {
                             setContactPerson(e.target.value);
+                            setAttendantName(e.target.value);
                             if (formErrors.contactPerson) setFormErrors((prev) => ({ ...prev, contactPerson: '' }));
                           }}
                           placeholder="e.g. Sahana S. or Ramesh K."
@@ -2528,6 +2525,7 @@ function CareBridgeApp() {
                           value={contactPhone}
                           onChange={(e) => {
                             setContactPhone(e.target.value);
+                            setAttendantPhone(e.target.value);
                             if (formErrors.contactPhone) setFormErrors((prev) => ({ ...prev, contactPhone: '' }));
                           }}
                           placeholder="+91 98451 98765"
@@ -2575,10 +2573,10 @@ function CareBridgeApp() {
                         <label className="flex items-start gap-2 text-xs text-slate-700">
                           <input
                             type="checkbox"
-                            checked={attendantConsentFingerprint === getAttendantConsentFingerprint()}
+                            checked={Boolean(attendantConsentFingerprint)}
                             onChange={(e) => {
                               setAttendantConsentFingerprint(
-                                e.target.checked ? getAttendantConsentFingerprint() : null
+                                e.target.checked ? 'granted' : null
                               );
                               if (e.target.checked) {
                                 setFormErrors((prev) => ({ ...prev, attendantConsent: '' }));
@@ -2742,9 +2740,14 @@ function CareBridgeApp() {
                   {Object.keys(formErrors).length > 0 && (
                     <div className="p-3 bg-red-50 border border-red-200 rounded-xl flex items-start gap-2">
                       <AlertTriangle className="h-4 w-4 text-red-600 shrink-0 mt-0.5" />
-                      <p className="text-xs text-red-700 font-medium leading-relaxed">
-                        Please fill in all required fields marked with * before submitting this emergency case.
-                      </p>
+                      <div className="text-xs text-red-700 font-medium leading-relaxed">
+                        <p className="font-semibold">Please resolve the following before submitting this emergency case:</p>
+                        <ul className="list-disc list-inside mt-1 space-y-0.5 text-[11px]">
+                          {Object.entries(formErrors).map(([key, err]) => err ? (
+                            <li key={key}>{err}</li>
+                          ) : null)}
+                        </ul>
+                      </div>
                     </div>
                   )}
 

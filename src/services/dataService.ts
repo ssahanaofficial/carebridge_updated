@@ -1725,16 +1725,34 @@ class DataStore {
     });
 
     const batch = writeBatch(db);
-    batch.set(caseRef, {
+    const caseDoc: Record<string, any> = {
       ...emergencyCase,
       status: 'REQUESTED',
       requesterUid,
       requesterRole: requester.role,
-      attendantUid: isSelfSubmission ? emergencyCase.attendantUid : requesterUid,
       matchedHospitalName: hospitalProvider.displayName,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp()
+    };
+    if (isSelfSubmission) {
+      if (emergencyCase.attendantUid) {
+        caseDoc.attendantUid = emergencyCase.attendantUid;
+      } else {
+        delete caseDoc.attendantUid;
+      }
+    } else {
+      caseDoc.attendantUid = requesterUid;
+    }
+    // Remove any undefined keys at root and nested attendant object to prevent Firestore errors
+    Object.keys(caseDoc).forEach((key) => {
+      if (caseDoc[key] === undefined) delete caseDoc[key];
     });
+    if (caseDoc.attendant && typeof caseDoc.attendant === 'object') {
+      Object.keys(caseDoc.attendant).forEach((key) => {
+        if (caseDoc.attendant[key] === undefined) delete caseDoc.attendant[key];
+      });
+    }
+    batch.set(caseRef, caseDoc);
     requests.forEach(({ ref, request }) => {
       batch.set(ref, {
         ...request,
