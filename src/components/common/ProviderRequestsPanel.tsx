@@ -10,7 +10,7 @@ interface ProviderRequestsPanelProps {
 }
 
 const isActionRequired = (status: string) =>
-  ['pending', 'assigned', 'requested'].includes(status.toLowerCase());
+  ['pending', 'assigned'].includes(status.toLowerCase());
 
 const formatLabel = (key: string) =>
   key.replace(/_/g, ' ').replace(/([A-Z])/g, ' $1').replace(/^./, (letter) => letter.toUpperCase());
@@ -122,13 +122,13 @@ export const ProviderRequestsPanel: React.FC<ProviderRequestsPanelProps> = ({
           <LoaderCircle className="mx-auto mb-2 h-5 w-5 animate-spin" />
           Loading assigned requests...
         </div>
-      ) : !loadError && requests.length === 0 ? (
+      ) : !loadError && requests.filter((r) => String(r.status).toUpperCase() !== 'REQUESTED').length === 0 ? (
         <div className="py-8 text-center text-sm text-slate-500">
           No resource requests are currently assigned to this account.
         </div>
       ) : (
         <div className="space-y-3">
-          {requests.map((request) => (
+          {requests.filter((r) => String(r.status).toUpperCase() !== 'REQUESTED').map((request) => (
             <article key={request.requestId} className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 space-y-3">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="space-y-1">

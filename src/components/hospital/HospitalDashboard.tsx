@@ -125,15 +125,17 @@ export const HospitalDashboard: React.FC = () => {
     }
   };
 
-  const isActionRequired = (status: string) => status === 'pending' || status === 'ASSIGNED' || status === 'REQUESTED';
+  const isActionRequired = (status: string) => ['pending', 'assigned'].includes(status.toLowerCase());
 
   const filteredRequests = requests.filter((r) => {
+    // Requests in REQUESTED status display first in Admin dashboard until assigned
+    if (String(r.status).toUpperCase() === 'REQUESTED') return false;
     if (filter === 'all') return true;
     if (filter === 'pending') return isActionRequired(r.status);
-    return r.status === filter;
+    return r.status.toLowerCase() === filter.toLowerCase();
   });
 
-  const pendingCount = requests.filter((r) => isActionRequired(r.status)).length;
+  const pendingCount = requests.filter((r) => String(r.status).toUpperCase() !== 'REQUESTED' && isActionRequired(r.status)).length;
 
   if (!profile) {
     return (

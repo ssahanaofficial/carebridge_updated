@@ -32,7 +32,7 @@ export const BloodBankDashboard: React.FC = () => {
   const [rejectingReqId, setRejectingReqId] = useState<string | null>(null);
   const [rejectionReason, setRejectionReason] = useState<string>('');
   const [respondingReqId, setRespondingReqId] = useState<string | null>(null);
-  const isActionRequired = (status: string) => ['pending', 'assigned', 'requested'].includes(status.toLowerCase());
+  const isActionRequired = (status: string) => ['pending', 'assigned'].includes(status.toLowerCase());
 
   const loadData = () => {
     if (!currentUser) return;
@@ -141,7 +141,7 @@ export const BloodBankDashboard: React.FC = () => {
   }
 
   const bloodGroups: BloodGroup[] = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
-  const pendingRequests = requests.filter((r) => isActionRequired(String(r.status)));
+  const pendingRequests = requests.filter((r) => String(r.status).toUpperCase() !== 'REQUESTED' && isActionRequired(String(r.status)));
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 space-y-6">

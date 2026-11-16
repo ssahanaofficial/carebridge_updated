@@ -30,7 +30,7 @@ export const AmbulanceDashboard: React.FC = () => {
   const [rejectingReqId, setRejectingReqId] = useState<string | null>(null);
   const [rejectionReason, setRejectionReason] = useState('');
   const [respondingReqId, setRespondingReqId] = useState<string | null>(null);
-  const isActionRequired = (status: string) => ['pending', 'assigned', 'requested'].includes(status.toLowerCase());
+  const isActionRequired = (status: string) => ['pending', 'assigned'].includes(status.toLowerCase());
 
   // New vehicle form state
   const [showAddVehicle, setShowAddVehicle] = useState(false);
@@ -153,7 +153,7 @@ export const AmbulanceDashboard: React.FC = () => {
     );
   }
 
-  const pendingRequests = requests.filter((r) => isActionRequired(String(r.status)));
+  const pendingRequests = requests.filter((r) => String(r.status).toUpperCase() !== 'REQUESTED' && isActionRequired(String(r.status)));
   const activeTrips = trips.filter((t) => t.status !== 'completed');
 
   return (

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { app, auth, db } from './config/firebase';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { Header } from './components/common/Header';
@@ -15,6 +15,14 @@ import { OxygenDashboard } from './components/oxygen/OxygenDashboard';
 import { AmbulanceDashboard } from './components/ambulance/AmbulanceDashboard';
 import { DoctorDashboard } from './components/doctor/DoctorDashboard';
 import { AdminDashboard } from './components/admin/AdminDashboard';
+import {
+  searchNearbyHospitals,
+  getGoogleMapEmbedUrl,
+  getGoogleMapsDirectionsUrl,
+  buildProvidersLookup,
+  POPULAR_LOCATIONS,
+  type HospitalProvider
+} from './services/hospitalDirectoryService';
 import {
   dataStore,
   type ResourceRequestDraft,
@@ -339,6 +347,16 @@ export interface EmergencyCase {
   attendantRelation: string;
   attendantPhone: string;
   incidentAddress: string;
+  location?: {
+    address: string;
+    city?: string;
+    state?: string;
+    landmark?: string;
+    coordinates?: {
+      lat: number;
+      lng: number;
+    };
+  };
   triagePriority: 'immediate' | 'emergency' | 'urgent' | 'semi-urgent';
   emergencyDescription: string;
   contactPerson?: string;
@@ -525,6 +543,22 @@ function CareBridgeApp() {
   const [savingAttendantUid, setSavingAttendantUid] = useState<string | null>(null);
   const [historyNotice, setHistoryNotice] = useState<string | null>(null);
   const [selectedCaseFromHistory, setSelectedCaseFromHistory] = useState(false);
+
+  // Additional Resource Request State (for active emergency cases)
+  const [isAdditionalResourceModalOpen, setIsAdditionalResourceModalOpen] = useState(false);
+  const [additionalResourceType, setAdditionalResourceType] = useState<'bed' | 'icu' | 'blood' | 'oxygen' | 'ambulance' | 'doctor'>('blood');
+  const [additionalBloodGroup, setAdditionalBloodGroup] = useState('B+');
+  const [additionalBloodUnits, setAdditionalBloodUnits] = useState('2');
+  const [additionalOxygenType, setAdditionalOxygenType] = useState<'cylinder' | 'concentrator'>('cylinder');
+  const [additionalOxygenQty, setAdditionalOxygenQty] = useState('2');
+  const [additionalAmbulanceType, setAdditionalAmbulanceType] = useState<'ALS' | 'BLS' | 'Patient Transport'>('ALS');
+  const [additionalAmbulanceAddress, setAdditionalAmbulanceAddress] = useState('');
+  const [additionalDoctorType, setAdditionalDoctorType] = useState('Emergency Physician');
+  const [additionalUrgency, setAdditionalUrgency] = useState<'immediate' | 'emergency' | 'urgent'>('emergency');
+  const [additionalResourceNotes, setAdditionalResourceNotes] = useState('');
+  const [isSubmittingAdditionalResource, setIsSubmittingAdditionalResource] = useState(false);
+  const [additionalResourceSuccess, setAdditionalResourceSuccess] = useState<string | null>(null);
+  const [additionalResourceError, setAdditionalResourceError] = useState<string | null>(null);
 
   // Effect: Sync authenticated attendant profile & fetch their authorized linked patients and cases
   useEffect(() => {
@@ -733,29 +767,59 @@ function CareBridgeApp() {
     };
   }, [dashboardTab, currentUser?.uid, currentUser?.role]);
 
-  // Provider Directory Lookup
-  const PROVIDERS: Record<string, { name: string; details: string; rating: string; phone: string; address: string }> = {
-    'prov-01': {
-      name: "St. Luke's Medical Center",
-      details: '5 Hospital Beds, 2 ICU',
-      rating: '4.8 Stars',
-      phone: '+91 836 225 1100',
-      address: 'Vidyanagar, Hubballi, Karnataka 580021'
-    },
-    'prov-02': {
-      name: 'City General Hospital',
-      details: '2 Hospital Beds, 1 ICU, 15 Units B+ Blood, 10 Oxygen Tanks',
-      rating: '4.5 Stars',
-      phone: '+91 836 237 4422',
-      address: 'PB Road, Hubballi, Karnataka 580029'
-    },
-    'prov-03': {
-      name: 'Paramount Ambulance Service',
-      details: '3 Ambulances',
-      rating: '4.9 Stars',
-      phone: '+91 836 299 9108',
-      address: 'Station Road, Hubballi, Karnataka 580020'
+  // Dynamic Nearby Hospitals & Provider Directory Lookup
+  const [showMap, setShowMap] = useState<boolean>(true);
+  const [locationNotice, setLocationNotice] = useState<string | null>(null);
+
+  const nearbyHospitals = useMemo(() => {
+    return searchNearbyHospitals(searchLocation, selectedResources);
+  }, [searchLocation, selectedResources]);
+
+  const PROVIDERS = useMemo(() => {
+    return buildProvidersLookup(nearbyHospitals);
+  }, [nearbyHospitals]);
+
+  const selectedHospital = useMemo(() => {
+    return nearbyHospitals.find((h) => h.id === selectedProviderId) || nearbyHospitals[0] || null;
+  }, [nearbyHospitals, selectedProviderId]);
+
+  useEffect(() => {
+    if (nearbyHospitals.length > 0) {
+      const exists = nearbyHospitals.some((h) => h.id === selectedProviderId);
+      if (!exists && !PROVIDERS[selectedProviderId]) {
+        setSelectedProviderId(nearbyHospitals[0].id);
+      }
     }
+  }, [nearbyHospitals, selectedProviderId, PROVIDERS]);
+
+  const handleDetectLocation = () => {
+    if (!navigator.geolocation) {
+      setLocationNotice('Geolocation is not supported by your browser.');
+      setTimeout(() => setLocationNotice(null), 4000);
+      return;
+    }
+    setIsLocating(true);
+    setLocationNotice('Detecting your GPS location...');
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setIsLocating(false);
+        const { latitude, longitude } = pos.coords;
+        const locString = `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
+        handleUpdateLocation(locString);
+        setLocationNotice(`Location detected: ${locString}`);
+        setTimeout(() => setLocationNotice(null), 4000);
+      },
+      (err) => {
+        setIsLocating(false);
+        let msg = 'Unable to retrieve location.';
+        if (err.code === 1) msg = 'Location permission denied. Please choose a city below.';
+        else if (err.code === 2) msg = 'Location unavailable. Please choose a city below.';
+        else if (err.code === 3) msg = 'Location request timed out.';
+        setLocationNotice(msg);
+        setTimeout(() => setLocationNotice(null), 4000);
+      },
+      { timeout: 10000, enableHighAccuracy: true }
+    );
   };
 
   const getAttendantConsentFingerprint = () => JSON.stringify({
@@ -1208,6 +1272,120 @@ function CareBridgeApp() {
     setTimeout(() => setCopiedCaseId(false), 2500);
   };
 
+  const handleRequestAdditionalResourceSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const targetCase = selectedDashboardCase || casesList[0];
+    if (!targetCase) {
+      setAdditionalResourceError('No active emergency case selected to add resources to.');
+      return;
+    }
+    setIsSubmittingAdditionalResource(true);
+    setAdditionalResourceError(null);
+    setAdditionalResourceSuccess(null);
+
+    try {
+      let details: DataResourceRequest['details'] = {};
+      if (additionalResourceType === 'blood') {
+        details = {
+          bloodGroup: additionalBloodGroup,
+          units: Number(additionalBloodUnits) || 1,
+          notes: additionalResourceNotes.trim() || 'Additional emergency blood units requested'
+        };
+      } else if (additionalResourceType === 'oxygen') {
+        details = {
+          oxygenType: additionalOxygenType,
+          cylinders: additionalOxygenType === 'cylinder' ? Number(additionalOxygenQty) || 1 : 0,
+          concentrators: additionalOxygenType === 'concentrator' ? Number(additionalOxygenQty) || 1 : 0,
+          notes: additionalResourceNotes.trim() || 'Additional high-flow oxygen requested'
+        };
+      } else if (additionalResourceType === 'ambulance') {
+        details = {
+          vehicleType: additionalAmbulanceType,
+          pickupAddress: additionalAmbulanceAddress.trim() || targetCase.location?.address || targetCase.incidentAddress || 'Current incident location',
+          notes: additionalResourceNotes.trim() || 'Additional ambulance dispatch requested'
+        };
+      } else if (additionalResourceType === 'doctor') {
+        details = {
+          doctorType: additionalDoctorType,
+          specialty: additionalDoctorType,
+          notes: additionalResourceNotes.trim() || 'Physician consultation requested'
+        };
+      } else if (additionalResourceType === 'icu') {
+        details = {
+          bedType: 'ICU Bed',
+          notes: additionalResourceNotes.trim() || 'ICU critical care allocation requested'
+        };
+      } else {
+        details = {
+          bedType: 'Hospital Inpatient Bed',
+          notes: additionalResourceNotes.trim() || 'Hospital admission bed requested'
+        };
+      }
+
+      await dataStore.requestAdditionalResource(targetCase.caseId, {
+        resourceType: additionalResourceType,
+        details,
+        urgency: additionalUrgency,
+        notes: additionalResourceNotes.trim()
+      });
+
+      setAdditionalResourceSuccess('Additional resource requested successfully! It has been routed to the Central Coordinator / Admin for provider assignment.');
+      setCasesList((prev) =>
+        prev.map((c) =>
+          c.caseId === targetCase.caseId
+            ? {
+                ...c,
+                resourcesNeeded: Array.from(new Set([...(c.resourcesNeeded || []), additionalResourceType])),
+                resourcesList: Array.from(new Set([...(c.resourcesList || []), additionalResourceType])),
+                individualStatuses: [
+                  ...(c.individualStatuses || []),
+                  {
+                    resource: additionalResourceType.toUpperCase(),
+                    status: 'Pending Admin Assignment',
+                    code: 'pending' as const,
+                    detail: additionalResourceNotes.trim() || `Additional ${additionalResourceType} requested`,
+                    updatedAt: 'Just now'
+                  }
+                ]
+              }
+            : c
+        )
+      );
+      if (selectedDashboardCase && selectedDashboardCase.caseId === targetCase.caseId) {
+        setSelectedDashboardCase((prev) =>
+          prev
+            ? {
+                ...prev,
+                resourcesNeeded: Array.from(new Set([...(prev.resourcesNeeded || []), additionalResourceType])),
+                resourcesList: Array.from(new Set([...(prev.resourcesList || []), additionalResourceType])),
+                individualStatuses: [
+                  ...(prev.individualStatuses || []),
+                  {
+                    resource: additionalResourceType.toUpperCase(),
+                    status: 'Pending Admin Assignment',
+                    code: 'pending' as const,
+                    detail: additionalResourceNotes.trim() || `Additional ${additionalResourceType} requested`,
+                    updatedAt: 'Just now'
+                  }
+                ]
+              }
+            : null
+        );
+      }
+
+      setTimeout(() => {
+        setIsAdditionalResourceModalOpen(false);
+        setAdditionalResourceSuccess(null);
+        setAdditionalResourceNotes('');
+      }, 2000);
+    } catch (err) {
+      console.error('Failed to request additional resource:', err);
+      setAdditionalResourceError(err instanceof Error ? err.message : 'Could not submit resource request. Please try again.');
+    } finally {
+      setIsSubmittingAdditionalResource(false);
+    }
+  };
+
   const resetCaseForm = () => {
     if (currentUser?.role === 'patient') {
       setPatientName(currentUser.displayName || '');
@@ -1641,134 +1819,227 @@ function CareBridgeApp() {
                 </div>
               </div>
 
-              {/* PANEL 2: "2. Enter Location & Provider Status" (Right Soft-Blue Card) */}
-              <div className="bg-[#EEF3F8] rounded-3xl shadow-xl p-6 sm:p-7 border border-slate-200/60 flex flex-col justify-between">
+              {/* PANEL 2: "2. Enter Location & Provider Status" (Right Soft-Blue Card with Multi-Hospital Search & Live Google Map) */}
+              <div className="bg-[#EEF3F8] rounded-3xl shadow-xl p-5 sm:p-7 border border-slate-200/60 flex flex-col justify-between">
                 <div>
-                  <h2 className="text-xl sm:text-2xl font-bold text-[#0F3868] mb-4 tracking-tight">
-                    2. Enter Location & Provider Status
-                  </h2>
+                  <div className="flex items-center justify-between gap-2 mb-3">
+                    <h2 className="text-xl sm:text-2xl font-bold text-[#0F3868] tracking-tight">
+                      2. Enter Location & Provider Status
+                    </h2>
+                    <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-teal-100 text-[#00707E] shrink-0">
+                      {nearbyHospitals.length} Facilities Nearby
+                    </span>
+                  </div>
 
-                  {/* Location Search Bar */}
-                  <div className="flex items-center gap-2 mb-4">
+                  {/* Location Search Bar + GPS Location Detector */}
+                  <div className="flex items-center gap-2 mb-2">
                     <div className="relative flex-1">
                       <MapPin className="absolute left-3.5 top-2.5 h-4 w-4 text-slate-500" />
                       <input
                         type="text"
                         value={searchLocation}
                         onChange={(e) => handleUpdateLocation(e.target.value)}
-                        placeholder="Hubballi, Karnataka, India"
+                        placeholder="Search city, area, or landmark (e.g. Dharwad, Belagavi)..."
                         className="w-full pl-10 pr-3 py-2 text-sm bg-white border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#00707E] font-medium text-slate-900 shadow-2xs"
                       />
                     </div>
                     <button
                       onClick={() => {}}
-                      className="px-6 py-2 rounded-xl bg-[#00707E] hover:bg-[#005B66] text-white text-sm font-semibold transition-colors shadow-xs shrink-0"
+                      className="px-4 py-2 rounded-xl bg-[#00707E] hover:bg-[#005B66] text-white text-sm font-semibold transition-colors shadow-xs shrink-0 flex items-center gap-1.5"
                     >
-                      Search
+                      <Search className="h-3.5 w-3.5" />
+                      <span>Search</span>
+                    </button>
+                    <button
+                      onClick={handleDetectLocation}
+                      disabled={isLocating}
+                      title="Auto-detect hospitals near your current GPS location"
+                      className="px-3 py-2 rounded-xl bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 text-sm font-medium transition-colors shadow-2xs shrink-0 flex items-center gap-1.5"
+                    >
+                      <Navigation className={`h-4 w-4 text-[#00707E] ${isLocating ? 'animate-spin' : ''}`} />
+                      <span className="hidden sm:inline">{isLocating ? 'Locating...' : 'GPS'}</span>
                     </button>
                   </div>
 
-                  {/* Provider Results List (Clean white card matching Screenshot 2) */}
-                  <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs divide-y divide-slate-100 overflow-hidden mb-5">
-                    {/* Provider 1: St. Luke's Medical Center */}
-                    <div className="p-3.5 sm:p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                      <div>
-                        <h3 className="font-bold text-slate-900 text-sm sm:text-base">
-                          St. Luke's Medical Center
-                        </h3>
-                        <p className="text-xs text-slate-800 mt-0.5">
-                          Available Resources:{' '}
-                          <span className="font-semibold text-slate-900">5 Hospital Beds, 2 ICU.</span>
-                        </p>
-                        <p className="text-xs text-slate-600 mt-0.5">
-                          Latest Update: 2 mins ago.
-                        </p>
-                        <p className="text-xs text-slate-600 mt-0.5">
-                          Overall Rating: 4.8 Stars.{' '}
-                          <span className="text-[#00707E] font-medium cursor-pointer hover:underline">[View Reviews]</span>
-                        </p>
-                      </div>
-
-                      <button
-                        onClick={() => handleSelectProvider('prov-01')}
-                        className={`px-4 py-2 rounded-lg text-xs font-semibold transition-colors shadow-xs shrink-0 ${
-                          selectedProviderId === 'prov-01'
-                            ? 'bg-[#005863] text-white ring-2 ring-teal-400'
-                            : 'bg-[#00707E] hover:bg-[#005B66] text-white'
-                        }`}
-                      >
-                        {selectedProviderId === 'prov-01' ? 'Selected ✓' : 'Select Provider'}
-                      </button>
+                  {/* Geolocation status / error alert */}
+                  {locationNotice && (
+                    <div className="mb-2 text-xs font-medium text-teal-900 bg-teal-50 border border-teal-200 px-3 py-1.5 rounded-lg flex items-center gap-2 shadow-2xs">
+                      <MapPin className="h-3.5 w-3.5 text-[#00707E] shrink-0" />
+                      <span>{locationNotice}</span>
                     </div>
+                  )}
 
-                    {/* Provider 2: City General Hospital */}
-                    <div className="p-3.5 sm:p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                      <div>
-                        <h3 className="font-bold text-slate-900 text-sm sm:text-base">
-                          City General Hospital
-                        </h3>
-                        <p className="text-xs text-slate-800 mt-0.5">
-                          Available Resources:{' '}
-                          <span className="font-semibold text-slate-900">
-                            2 Hospital Beds, 1 ICU, 15 Units B+ Blood, 10 Oxygen Tanks.
-                          </span>
-                        </p>
-                        <p className="text-xs text-slate-600 mt-0.5">
-                          Latest Update: 10 mins ago.
-                        </p>
-                        <p className="text-xs text-slate-600 mt-0.5">
-                          Overall Rating: 4.5 Stars.{' '}
-                          <span className="text-[#00707E] font-medium cursor-pointer hover:underline">[View Reviews]</span>
-                        </p>
+                  {/* Quick City Selection Chips */}
+                  <div className="flex items-center gap-1.5 overflow-x-auto pb-2 mb-3 scrollbar-thin">
+                    <span className="text-[11px] font-bold text-slate-500 whitespace-nowrap">Popular:</span>
+                    {POPULAR_LOCATIONS.map((loc) => {
+                      const isActive = searchLocation.toLowerCase().includes(loc.label.toLowerCase());
+                      return (
+                        <button
+                          key={loc.label}
+                          type="button"
+                          onClick={() => handleUpdateLocation(loc.query)}
+                          className={`text-xs px-2.5 py-1 rounded-full font-medium whitespace-nowrap transition-all ${
+                            isActive
+                              ? 'bg-[#00707E] text-white shadow-2xs ring-1 ring-[#00707E]'
+                              : 'bg-white hover:bg-slate-100 text-slate-700 border border-slate-200'
+                          }`}
+                        >
+                          📍 {loc.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Interactive Embedded Google Map */}
+                  <div className="mb-3.5 bg-white rounded-2xl border border-slate-200/80 overflow-hidden shadow-xs">
+                    <div className="px-3.5 py-2 bg-slate-50 border-b border-slate-200/70 flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <MapPin className="h-4 w-4 text-[#00707E] shrink-0" />
+                        <span className="text-xs font-bold text-slate-800 truncate">
+                          Map: {selectedHospital ? selectedHospital.name : searchLocation}
+                        </span>
                       </div>
-
-                      <button
-                        onClick={() => handleSelectProvider('prov-02')}
-                        className={`px-4 py-2 rounded-lg text-xs font-semibold transition-colors shadow-xs shrink-0 ${
-                          selectedProviderId === 'prov-02'
-                            ? 'bg-[#005863] text-white ring-2 ring-teal-400'
-                            : 'bg-[#00707E] hover:bg-[#005B66] text-white'
-                        }`}
-                      >
-                        {selectedProviderId === 'prov-02' ? 'Selected ✓' : 'Select Provider'}
-                      </button>
-                    </div>
-
-                    {/* Provider 3: Paramount Ambulance Service */}
-                    <div className="p-3.5 sm:p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                      <div>
-                        <h3 className="font-bold text-slate-900 text-sm sm:text-base">
-                          Paramount Ambulance Service
-                        </h3>
-                        <p className="text-xs text-slate-800 mt-0.5">
-                          Available Resources:{' '}
-                          <span className="font-semibold text-slate-900">3 Ambulances.</span>
-                        </p>
-                        <p className="text-xs text-slate-600 mt-0.5">
-                          Latest Update: 5 mins ago.
-                        </p>
-                        <p className="text-xs text-slate-600 mt-0.5">
-                          Overall Rating: 4.9 Stars.{' '}
-                          <span className="text-[#00707E] font-medium cursor-pointer hover:underline">[View Reviews]</span>
-                        </p>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {selectedHospital && (
+                          <a
+                            href={getGoogleMapsDirectionsUrl(selectedHospital, searchLocation)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-[11px] font-semibold text-[#00707E] hover:underline flex items-center gap-1"
+                          >
+                            <span>Directions</span>
+                            <ExternalLink className="h-3 w-3" />
+                          </a>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setShowMap(!showMap)}
+                          className="text-[11px] font-medium text-slate-600 hover:text-slate-900 px-2 py-0.5 rounded bg-white border border-slate-200 transition-colors"
+                        >
+                          {showMap ? 'Hide Map' : 'Show Map'}
+                        </button>
                       </div>
-
-                      <button
-                        onClick={() => handleSelectProvider('prov-03')}
-                        className={`px-4 py-2 rounded-lg text-xs font-semibold transition-colors shadow-xs shrink-0 ${
-                          selectedProviderId === 'prov-03'
-                            ? 'bg-[#005863] text-white ring-2 ring-teal-400'
-                            : 'bg-[#00707E] hover:bg-[#005B66] text-white'
-                        }`}
-                      >
-                        {selectedProviderId === 'prov-03' ? 'Selected ✓' : 'Select Provider'}
-                      </button>
                     </div>
+                    {showMap && (
+                      <div className="relative w-full h-44 sm:h-48 bg-slate-100">
+                        <iframe
+                          title="Nearby Hospitals Google Map"
+                          width="100%"
+                          height="100%"
+                          loading="lazy"
+                          className="border-0 w-full h-full"
+                          src={getGoogleMapEmbedUrl(searchLocation, selectedHospital)}
+                          allowFullScreen
+                        />
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Multiple Nearby Hospitals List */}
+                  <div className="space-y-2.5 max-h-[360px] overflow-y-auto pr-1 mb-4 scrollbar-thin">
+                    {nearbyHospitals.map((hospital) => {
+                      const isSelected = selectedProviderId === hospital.id;
+                      return (
+                        <div
+                          key={hospital.id}
+                          className={`p-3.5 rounded-2xl bg-white border transition-all ${
+                            isSelected
+                              ? 'border-[#00707E] ring-2 ring-[#00707E]/30 shadow-sm bg-teal-50/20'
+                              : 'border-slate-200/80 hover:border-slate-300 shadow-2xs'
+                          }`}
+                        >
+                          <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-1.5 flex-wrap mb-1">
+                                <h3 className="font-bold text-slate-900 text-sm sm:text-base leading-snug">
+                                  {hospital.name}
+                                </h3>
+                                <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200">
+                                  {hospital.type}
+                                </span>
+                                {hospital.isEmergency24x7 && (
+                                  <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800">
+                                    24/7 ER
+                                  </span>
+                                )}
+                              </div>
+
+                              <p className="text-xs text-slate-500 flex items-center gap-1 mb-1">
+                                <MapPin className="h-3 w-3 text-slate-400 shrink-0" />
+                                <span className="truncate">{hospital.address}</span>
+                              </p>
+
+                              <p className="text-xs font-semibold text-[#00707E] mb-2">
+                                📍 {hospital.distanceKm} km away • Est. Arrival: ~{hospital.etaMins} mins
+                              </p>
+
+                              {/* Available Resources summary pill row */}
+                              <div className="flex flex-wrap gap-1.5 mb-2">
+                                {hospital.availableResources.beds > 0 && (
+                                  <span className="text-[11px] font-semibold px-2 py-0.5 rounded-md bg-teal-50 text-teal-900 border border-teal-200">
+                                    🛏️ {hospital.availableResources.beds} Beds
+                                  </span>
+                                )}
+                                {hospital.availableResources.icu > 0 && (
+                                  <span className="text-[11px] font-semibold px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-900 border border-indigo-200">
+                                    🫀 {hospital.availableResources.icu} ICU
+                                  </span>
+                                )}
+                                {hospital.availableResources.bloodUnits > 0 && (
+                                  <span className="text-[11px] font-semibold px-2 py-0.5 rounded-md bg-rose-50 text-rose-900 border border-rose-200">
+                                    🩸 {hospital.availableResources.bloodUnits} Blood Units
+                                  </span>
+                                )}
+                                {hospital.availableResources.oxygenTanks > 0 && (
+                                  <span className="text-[11px] font-semibold px-2 py-0.5 rounded-md bg-cyan-50 text-cyan-900 border border-cyan-200">
+                                    💨 {hospital.availableResources.oxygenTanks} Oxygen
+                                  </span>
+                                )}
+                                {hospital.availableResources.ambulances > 0 && (
+                                  <span className="text-[11px] font-semibold px-2 py-0.5 rounded-md bg-amber-50 text-amber-900 border border-amber-200">
+                                    🚑 {hospital.availableResources.ambulances} Ambulances
+                                  </span>
+                                )}
+                              </div>
+
+                              <div className="flex items-center gap-2 text-xs text-slate-600 flex-wrap">
+                                <span>Updated: <span className="font-medium text-slate-800">{hospital.latestUpdate}</span></span>
+                                <span>•</span>
+                                <span>Rating: <span className="font-semibold text-slate-800">{hospital.rating}</span></span>
+                                <span>•</span>
+                                <a
+                                  href={getGoogleMapsDirectionsUrl(hospital, searchLocation)}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-[#00707E] font-medium hover:underline inline-flex items-center gap-0.5"
+                                >
+                                  View on Map <ExternalLink className="h-2.5 w-2.5" />
+                                </a>
+                              </div>
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() => handleSelectProvider(hospital.id)}
+                              className={`px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-xs shrink-0 self-start sm:self-center ${
+                                isSelected
+                                  ? 'bg-[#005863] text-white ring-2 ring-teal-400'
+                                  : 'bg-[#00707E] hover:bg-[#005B66] text-white'
+                              }`}
+                            >
+                              {isSelected ? 'Selected ✓' : 'Select Provider'}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
 
                 {/* Confirm & Proceed Button (Matches Screenshot 2: wide full-width teal button at bottom of panel) */}
                 <button
+                  type="button"
                   onClick={() => setCurrentScreen('case-details')}
                   className="w-full py-3.5 px-6 rounded-xl bg-[#00707E] hover:bg-[#005B66] text-white font-bold text-sm sm:text-base shadow-md transition-all active:scale-[0.99] text-center"
                 >

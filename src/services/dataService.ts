@@ -31,6 +31,7 @@ import { auth, db, isFirebaseConfigured } from '../config/firebase';
 import type {
   EmergencyCase,
   ResourceRequest,
+  ResourceType,
   HospitalProfile,
   BloodBankProfile,
   OxygenProfile,
@@ -1127,10 +1128,11 @@ class DataStore {
 
       const previousProviderUid = requestData.providerUid || '';
       const previousProviderName = requestData.providerName || '';
-      if (previousProviderUid === providerUid) {
+      const isAlreadyAssigned = previousProviderUid && requestData.status !== 'REQUESTED';
+      if (isAlreadyAssigned && previousProviderUid === providerUid) {
         throw new Error('This request is already assigned to the selected provider.');
       }
-      if (previousProviderUid && normalizedReason.length < 5) {
+      if (isAlreadyAssigned && normalizedReason.length < 5) {
         throw new Error('Enter a reassignment reason of at least five characters.');
       }
 
@@ -1209,8 +1211,296 @@ class DataStore {
       localRequest.status = 'ASSIGNED';
       localRequest.assignedAt = new Date().toISOString();
       localRequest.assignmentCoordinatorUid = coordinatorUid;
+
+      const caseItem = this.state.cases.find((c) => c.caseId === localRequest.caseId);
+      if (caseItem) {
+        if (['bed', 'icu', 'hospital_admission'].includes(localRequest.resourceType)) {
+          caseItem.assignedHospitalUid = providerUid;
+          caseItem.assignedHospitalName = assignedProviderName;
+        } else if (localRequest.resourceType === 'ambulance') {
+          caseItem.assignedAmbulanceUid = providerUid;
+          caseItem.assignedAmbulanceName = assignedProviderName;
+        } else if (localRequest.resourceType === 'blood') {
+          caseItem.assignedBloodBankUid = providerUid;
+          caseItem.assignedBloodBankName = assignedProviderName;
+        } else if (localRequest.resourceType === 'oxygen') {
+          caseItem.assignedOxygenUid = providerUid;
+          caseItem.assignedOxygenName = assignedProviderName;
+        }
+        caseItem.status = 'ASSIGNED';
+        caseItem.updatedAt = new Date().toISOString();
+      }
       this.saveState();
     }
+  }
+
+  public async assignCaseProviders(
+    caseId: string,
+    assignments: {
+      hospitalUid?: string;
+      ambulanceUid?: string;
+      bloodBankUid?: string;
+      oxygenUid?: string;
+      note?: string;
+    }
+  ): Promise<void> {
+    const coordinatorUid = auth.currentUser?.uid || 'admin-coordinator';
+    let coordinatorName = 'Central Coordinator';
+    if (auth.currentUser && isFirebaseConfigured && db) {
+      try {
+        const coordinatorSnapshot = await getDoc(doc(db, 'users', coordinatorUid));
+        if (coordinatorSnapshot.exists()) {
+          coordinatorName = coordinatorSnapshot.data().displayName || coordinatorName;
+        }
+      } catch (e) {
+        console.warn('Could not read coordinator user:', e);
+      }
+    }
+
+    const caseItem = this.state.cases.find((c) => c.caseId === caseId);
+    const reason = assignments.note?.trim() || 'Central Coordinator assignment';
+    const now = new Date().toISOString();
+
+    const assignmentMap: Array<{
+      role: UserRole;
+      resourceTypes: ResourceType[];
+      providerUid?: string;
+    }> = [
+      { role: 'hospital', resourceTypes: ['bed', 'icu', 'hospital_admission'], providerUid: assignments.hospitalUid },
+      { role: 'ambulanceProvider', resourceTypes: ['ambulance'], providerUid: assignments.ambulanceUid },
+      { role: 'bloodBank', resourceTypes: ['blood'], providerUid: assignments.bloodBankUid },
+      { role: 'oxygenProvider', resourceTypes: ['oxygen'], providerUid: assignments.oxygenUid }
+    ];
+
+    for (const item of assignmentMap) {
+      if (!item.providerUid) continue;
+
+      const providerUser = this.state.users.find((u) => u.uid === item.providerUid);
+      let providerName = providerUser?.displayName || '';
+      if (!providerName) {
+        if (item.role === 'hospital') providerName = this.state.hospitalProfiles[item.providerUid]?.hospitalName || '';
+        if (item.role === 'bloodBank') providerName = this.state.bloodBankProfiles[item.providerUid]?.bankName || '';
+        if (item.role === 'oxygenProvider') providerName = this.state.oxygenProfiles[item.providerUid]?.providerName || '';
+        if (item.role === 'ambulanceProvider') providerName = this.state.ambulanceProfiles[item.providerUid]?.providerName || '';
+      }
+      if (!providerName) providerName = 'Healthcare Provider';
+
+      let req = this.state.requests.find(
+        (r) => r.caseId === caseId && item.resourceTypes.includes(r.resourceType)
+      );
+
+      if (req) {
+        try {
+          if (isFirebaseConfigured && db && auth.currentUser) {
+            await this.assignResourceRequest(req.requestId, item.providerUid, reason);
+          } else {
+            req.providerUid = item.providerUid;
+            req.providerName = providerName;
+            req.status = 'ASSIGNED';
+            req.assignedAt = now;
+            req.assignmentCoordinatorUid = coordinatorUid;
+          }
+        } catch (e) {
+          console.warn(`[assignCaseProviders] assignResourceRequest warning for ${req.requestId}:`, e);
+          req.providerUid = item.providerUid;
+          req.providerName = providerName;
+          req.status = 'ASSIGNED';
+          req.assignedAt = now;
+          req.assignmentCoordinatorUid = coordinatorUid;
+        }
+      } else {
+        const defaultResourceType = item.resourceTypes[0];
+        const newReqId = `REQ-${caseId}-${defaultResourceType}`;
+        const newReq: ResourceRequest = {
+          requestId: newReqId,
+          caseId,
+          patientUid: caseItem?.patientUid || '',
+          requesterUid: caseItem?.requesterUid,
+          patientName: caseItem?.patientName,
+          providerUid: item.providerUid,
+          providerName,
+          resourceType: defaultResourceType,
+          details: { notes: reason },
+          status: 'ASSIGNED',
+          assignedAt: now,
+          assignmentCoordinatorUid: coordinatorUid,
+          createdAt: now,
+          updatedAt: now
+        };
+        this.createRequest(newReq);
+      }
+
+      this.addNotification({
+        id: 'notif-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
+        recipientUid: item.providerUid,
+        type: 'request_assigned',
+        title: 'Emergency Case Assigned',
+        message: `Emergency case ${caseId} has been assigned to your facility for dispatch.`,
+        relatedCaseId: caseId,
+        isRead: false,
+        createdAt: now
+      });
+
+      if (caseItem) {
+        if (item.role === 'hospital') {
+          caseItem.assignedHospitalUid = item.providerUid;
+          caseItem.assignedHospitalName = providerName;
+        } else if (item.role === 'ambulanceProvider') {
+          caseItem.assignedAmbulanceUid = item.providerUid;
+          caseItem.assignedAmbulanceName = providerName;
+        } else if (item.role === 'bloodBank') {
+          caseItem.assignedBloodBankUid = item.providerUid;
+          caseItem.assignedBloodBankName = providerName;
+        } else if (item.role === 'oxygenProvider') {
+          caseItem.assignedOxygenUid = item.providerUid;
+          caseItem.assignedOxygenName = providerName;
+        }
+      }
+    }
+
+    if (caseItem) {
+      caseItem.status = 'ASSIGNED';
+      caseItem.updatedAt = now;
+      if (!caseItem.auditHistory) caseItem.auditHistory = [];
+      caseItem.auditHistory.push({
+        id: 'audit-' + Date.now(),
+        status: 'ASSIGNED',
+        updatedByUid: coordinatorUid,
+        updatedByName: coordinatorName,
+        role: 'admin',
+        timestamp: now,
+        note: `Providers assigned: ${[
+          caseItem.assignedHospitalName && `Hospital: ${caseItem.assignedHospitalName}`,
+          caseItem.assignedAmbulanceName && `Ambulance: ${caseItem.assignedAmbulanceName}`,
+          caseItem.assignedBloodBankName && `Blood: ${caseItem.assignedBloodBankName}`,
+          caseItem.assignedOxygenName && `Oxygen: ${caseItem.assignedOxygenName}`
+        ].filter(Boolean).join(', ')}`
+      });
+    }
+
+    if (isFirebaseConfigured && db && auth.currentUser) {
+      try {
+        const caseRef = doc(db, 'cases', caseId);
+        const updatePayload: Record<string, any> = {
+          status: 'ASSIGNED',
+          updatedAt: serverTimestamp()
+        };
+        if (caseItem?.assignedHospitalUid) {
+          updatePayload.assignedHospitalUid = caseItem.assignedHospitalUid;
+          updatePayload.assignedHospitalName = caseItem.assignedHospitalName;
+        }
+        if (caseItem?.assignedAmbulanceUid) {
+          updatePayload.assignedAmbulanceUid = caseItem.assignedAmbulanceUid;
+          updatePayload.assignedAmbulanceName = caseItem.assignedAmbulanceName;
+        }
+        if (caseItem?.assignedBloodBankUid) {
+          updatePayload.assignedBloodBankUid = caseItem.assignedBloodBankUid;
+          updatePayload.assignedBloodBankName = caseItem.assignedBloodBankName;
+        }
+        if (caseItem?.assignedOxygenUid) {
+          updatePayload.assignedOxygenUid = caseItem.assignedOxygenUid;
+          updatePayload.assignedOxygenName = caseItem.assignedOxygenName;
+        }
+        await updateDoc(caseRef, updatePayload);
+      } catch (err) {
+        console.warn('[assignCaseProviders] Firestore case update warning:', err);
+      }
+    }
+
+    this.saveState();
+  }
+
+  public async requestAdditionalResource(
+    caseId: string,
+    params: {
+      resourceType: ResourceType;
+      details: ResourceRequest['details'];
+      urgency?: string;
+      notes?: string;
+    }
+  ): Promise<ResourceRequest> {
+    const caseItem = this.state.cases.find((c) => c.caseId === caseId);
+    const now = new Date().toISOString();
+    const requestId = `REQ-${caseId}-${params.resourceType}-${Date.now().toString(36)}`;
+    const requesterUid = auth.currentUser?.uid || caseItem?.requesterUid || '';
+
+    const newRequest: ResourceRequest = {
+      requestId,
+      caseId,
+      patientUid: caseItem?.patientUid || requesterUid,
+      requesterUid,
+      patientName: caseItem?.patientName || 'Emergency Patient',
+      providerUid: '',
+      providerName: 'Pending Admin Assignment',
+      resourceType: params.resourceType,
+      details: {
+        ...params.details,
+        urgency: params.urgency || caseItem?.urgencyLevel || 'urgent',
+        notes: params.notes || params.details?.notes || ''
+      },
+      status: 'REQUESTED',
+      createdAt: now,
+      updatedAt: now
+    };
+
+    if (isFirebaseConfigured && db && auth.currentUser) {
+      try {
+        const directorySnapshot = await getDocs(collection(db, 'providerDirectory'));
+        const roleByResource: Record<ResourceType, UserRole> = {
+          bed: 'hospital',
+          icu: 'hospital',
+          hospital_admission: 'hospital',
+          blood: 'bloodBank',
+          oxygen: 'oxygenProvider',
+          ambulance: 'ambulanceProvider',
+          doctor: 'doctor',
+          doctor_assistance: 'doctor'
+        };
+        const requiredRole = roleByResource[params.resourceType];
+        const candidate = directorySnapshot.docs
+          .map((d) => d.data() as ProviderDirectoryEntry)
+          .find((p) => p.role === requiredRole && p.isActive && p.isVerified);
+
+        const requestDocRef = doc(db, 'requests', requestId);
+        await setDoc(requestDocRef, {
+          ...newRequest,
+          providerUid: candidate?.uid || 'pending_coordinator_assignment',
+          providerName: candidate?.displayName || 'Pending Admin Assignment',
+          status: 'REQUESTED',
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp()
+        });
+      } catch (err) {
+        console.warn('[requestAdditionalResource] Firestore request write warning:', err);
+      }
+    }
+
+    this.createRequest(newRequest);
+
+    if (caseItem) {
+      if (!caseItem.resourcesNeeded) caseItem.resourcesNeeded = [];
+      if (!caseItem.resourcesNeeded.includes(params.resourceType)) {
+        caseItem.resourcesNeeded.push(params.resourceType);
+      }
+      if (!caseItem.individualStatuses) caseItem.individualStatuses = [];
+      const resourceLabels: Record<string, string> = {
+        bed: 'Hospital Bed',
+        icu: 'ICU Bed',
+        blood: 'Blood Supply',
+        oxygen: 'Oxygen Support',
+        ambulance: 'Ambulance',
+        doctor: 'Doctor Consultation'
+      };
+      caseItem.individualStatuses.push({
+        resource: resourceLabels[params.resourceType] || params.resourceType,
+        detail: params.notes || `Additional ${params.resourceType} requested`,
+        status: 'Pending Admin Assignment'
+      });
+      caseItem.updatedAt = now;
+      this.saveState();
+    }
+
+    return newRequest;
   }
 
   public async transitionEmergencyCaseStatus(

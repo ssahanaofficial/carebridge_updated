@@ -25,7 +25,7 @@ export const OxygenDashboard: React.FC = () => {
   const [rejectingReqId, setRejectingReqId] = useState<string | null>(null);
   const [rejectionReason, setRejectionReason] = useState('');
   const [respondingReqId, setRespondingReqId] = useState<string | null>(null);
-  const isActionRequired = (status: string) => ['pending', 'assigned', 'requested'].includes(status.toLowerCase());
+  const isActionRequired = (status: string) => ['pending', 'assigned'].includes(status.toLowerCase());
   const [cylinders, setCylinders] = useState<number>(35);
   const [concentrators, setConcentrators] = useState<number>(12);
   const [deliveryAvailable, setDeliveryAvailable] = useState<boolean>(true);
@@ -127,7 +127,8 @@ export const OxygenDashboard: React.FC = () => {
     );
   }
 
-  const pendingCount = requests.filter((r) => isActionRequired(String(r.status))).length;
+  const activeRequests = requests.filter((r) => String(r.status).toUpperCase() !== 'REQUESTED');
+  const pendingCount = activeRequests.filter((r) => isActionRequired(String(r.status))).length;
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 space-y-6">
@@ -286,13 +287,13 @@ export const OxygenDashboard: React.FC = () => {
               <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-800">{requestsError}</div>
             ) : requestsLoading ? (
               <div className="py-8 text-center text-slate-500 text-xs">Loading assigned oxygen requests...</div>
-            ) : requests.length === 0 ? (
+            ) : activeRequests.length === 0 ? (
               <div className="py-8 text-center text-slate-400 text-xs">
                 No oxygen requests received yet.
               </div>
             ) : (
               <div className="space-y-3">
-                {requests.map((req) => (
+                {activeRequests.map((req) => (
                   <div
                     key={req.requestId}
                     className="p-4 rounded-xl border border-slate-200 bg-slate-50/40 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
