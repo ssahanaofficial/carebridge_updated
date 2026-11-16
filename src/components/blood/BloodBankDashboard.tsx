@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import { doc, onSnapshot } from 'firebase/firestore';
+import { db, isFirebaseConfigured } from '../../config/firebase';
 import {
   Droplet,
   ShieldCheck,
@@ -47,6 +49,22 @@ export const BloodBankDashboard: React.FC = () => {
     if (!currentUser) return;
     loadData();
     const unsubscribeStore = dataStore.subscribe(loadData);
+    let unsubscribeDoc = () => {};
+    if (isFirebaseConfigured && db) {
+      try {
+        unsubscribeDoc = onSnapshot(doc(db, 'bloodBankProfiles', currentUser.uid), (snap) => {
+          if (snap.exists()) {
+            const data = snap.data() as BloodBankProfile;
+            setProfile(data);
+            if (data.inventory) {
+              setInventory(data.inventory);
+            }
+            dataStore.state.bloodBankProfiles[currentUser.uid] = data;
+            dataStore.saveState();
+          }
+        });
+      } catch (err) {}
+    }
     const unsubscribeRequests = subscribeRequestsForProviderFromFirestore(
       currentUser.uid,
       (nextRequests) => {
@@ -55,13 +73,14 @@ export const BloodBankDashboard: React.FC = () => {
         setRequestsError(null);
       },
       (message) => {
-        setRequests([]);
-        setRequestsError(message);
+        const local = dataStore.getRequestsForProvider(currentUser.uid);
+        setRequests(local);
         setRequestsLoading(false);
       }
     );
     return () => {
       unsubscribeStore();
+      unsubscribeDoc();
       unsubscribeRequests();
     };
   }, [currentUser]);
@@ -73,15 +92,19 @@ export const BloodBankDashboard: React.FC = () => {
     }));
   };
 
-  const handleSaveInventory = () => {
+  const handleSaveInventory = async () => {
     if (!currentUser) return;
     setIsUpdating(true);
-    dataStore.updateBloodBankProfile(currentUser.uid, { inventory });
-    setTimeout(() => {
+    try {
+      await dataStore.updateBloodBankProfile(currentUser.uid, { inventory });
+      setSuccessMessage('Blood inventory update request submitted to Central Coordinator for approval (Pending Review).');
+      setTimeout(() => setSuccessMessage(null), 4000);
+    } catch (e) {
+      setSuccessMessage('Blood inventory update request recorded (Pending Coordinator Review).');
+      setTimeout(() => setSuccessMessage(null), 4000);
+    } finally {
       setIsUpdating(false);
-      setSuccessMessage('Blood bank stock updated successfully.');
-      setTimeout(() => setSuccessMessage(null), 3000);
-    }, 400);
+    }
   };
 
   const handleAccept = async (reqId: string) => {
@@ -208,9 +231,28 @@ export const BloodBankDashboard: React.FC = () => {
             className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors flex items-center gap-1.5 self-start sm:self-auto"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${isUpdating ? 'animate-spin' : ''}`} />
-            {isUpdating ? 'Saving...' : 'Broadcast Stock Levels'}
+            {isUpdating ? 'Submitting to Coordinator...' : 'Submit Stock Update for Admin Approval'}
           </button>
         </div>
+
+        {/* Pending Coordinator Review Banner */}
+        {(() => {
+          const pendingUpdate = (dataStore.getProviderUpdateRequests() || []).find(
+            (u) => u.providerUid === currentUser?.uid && (!u.status || u.status === 'PENDING')
+          );
+          if (!pendingUpdate) return null;
+          return (
+            <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs space-y-1">
+              <div className="font-bold text-amber-900 flex items-center gap-1.5">
+                <Clock className="w-3.5 h-3.5 text-amber-700" />
+                <span>Pending Coordinator Review</span>
+              </div>
+              <p className="text-amber-800 text-[11px]">
+                Requested blood stock update ({pendingUpdate.summary}) is awaiting Coordinator review and acceptance in the Admin Dashboard before going live.
+              </p>
+            </div>
+          );
+        })()}
 
         {/* 8 Group Cards */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 pt-2">

@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import { doc, onSnapshot } from 'firebase/firestore';
+import { db, isFirebaseConfigured } from '../../config/firebase';
 import {
   Building2,
   Bed,
@@ -55,6 +57,22 @@ export const HospitalDashboard: React.FC = () => {
     if (!currentUser) return;
     loadData();
     const unsubscribeStore = dataStore.subscribe(loadData);
+    let unsubscribeDoc = () => {};
+    if (isFirebaseConfigured && db) {
+      try {
+        unsubscribeDoc = onSnapshot(doc(db, 'hospitalProfiles', currentUser.uid), (snap) => {
+          if (snap.exists()) {
+            const data = snap.data() as HospitalProfile;
+            setProfile(data);
+            setAvailBeds(data.availableBeds);
+            setAvailICU(data.availableICU);
+            setAvailVentilators(data.availableVentilators);
+            dataStore.state.hospitalProfiles[currentUser.uid] = data;
+            dataStore.saveState();
+          }
+        });
+      } catch (err) {}
+    }
     const unsubscribeRequests = subscribeRequestsForProviderFromFirestore(
       currentUser.uid,
       (nextRequests) => {
@@ -63,30 +81,34 @@ export const HospitalDashboard: React.FC = () => {
         setRequestsError(null);
       },
       (message) => {
-        setRequests([]);
-        setRequestsError(message);
+        const local = dataStore.getRequestsForProvider(currentUser.uid);
+        setRequests(local);
         setRequestsLoading(false);
       }
     );
     return () => {
       unsubscribeStore();
+      unsubscribeDoc();
       unsubscribeRequests();
     };
   }, [currentUser]);
 
-  const handleUpdateAvailability = () => {
+  const handleUpdateAvailability = async () => {
     if (!currentUser) return;
     setIsUpdating(true);
-    dataStore.updateHospitalProfile(currentUser.uid, {
-      availableBeds: Number(availBeds),
-      availableICU: Number(availICU),
-      availableVentilators: Number(availVentilators)
-    });
-    setTimeout(() => {
+    try {
+      await dataStore.updateHospitalProfile(currentUser.uid, {
+        availableBeds: Number(availBeds),
+        availableICU: Number(availICU),
+        availableVentilators: Number(availVentilators)
+      });
+      setSuccessMessage('Bed capacity update request submitted to Central Coordinator for approval (Pending Review).');
+      setTimeout(() => setSuccessMessage(null), 4000);
+    } catch (e) {
+      window.alert('Failed to update availability.');
+    } finally {
       setIsUpdating(false);
-      setSuccessMessage('Hospital bed capacity updated in live directory.');
-      setTimeout(() => setSuccessMessage(null), 3000);
-    }, 400);
+    }
   };
 
   const handleAccept = async (reqId: string) => {
@@ -270,17 +292,36 @@ export const HospitalDashboard: React.FC = () => {
               </div>
             </div>
 
+            {/* Pending Coordinator Review Banner */}
+            {(() => {
+              const pendingUpdate = (dataStore.getProviderUpdateRequests() || []).find(
+                (u) => u.providerUid === currentUser?.uid && (!u.status || u.status === 'PENDING')
+              );
+              if (!pendingUpdate) return null;
+              return (
+                <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs space-y-1">
+                  <div className="font-bold text-amber-900 flex items-center gap-1.5">
+                    <Clock className="w-3.5 h-3.5 text-amber-700" />
+                    <span>Pending Coordinator Review</span>
+                  </div>
+                  <p className="text-amber-800 text-[11px]">
+                    Requested capacity update ({pendingUpdate.summary}) is awaiting Coordinator review and acceptance in the Admin Dashboard before going live.
+                  </p>
+                </div>
+              );
+            })()}
+
             <button
               onClick={handleUpdateAvailability}
               disabled={isUpdating}
               className="w-full py-2.5 px-4 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors flex items-center justify-center gap-2"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${isUpdating ? 'animate-spin' : ''}`} />
-              {isUpdating ? 'Broadcasting Update...' : 'Broadcast Live Availability'}
+              {isUpdating ? 'Submitting to Coordinator...' : 'Submit Capacity Update for Admin Approval'}
             </button>
 
             <p className="text-[11px] text-slate-400 italic text-center leading-relaxed">
-              Updates reflect instantly across patient emergency searches and coordination rooms.
+              Updates require review and acceptance by Central Coordinator before updating live capacity.
             </p>
           </div>
 

@@ -315,9 +315,9 @@ function MedicalClipboardIllustration() {
 export interface ResourceStatusItem {
   resource: string;
   status: string;
-  code: 'pending' | 'dispatched' | 'reserved' | 'in-review' | 'completed';
+  code?: 'pending' | 'dispatched' | 'reserved' | 'in-review' | 'completed' | string;
   detail: string;
-  updatedAt: string;
+  updatedAt?: string;
 }
 
 export interface EmergencyCase {
@@ -367,6 +367,13 @@ export interface EmergencyCase {
   providerRating: string;
   resourcesList: string[];
   individualStatuses: ResourceStatusItem[];
+  rejectionReason?: string;
+  assignedHospitalName?: string;
+  assignedAmbulanceName?: string;
+  assignedBloodBankName?: string;
+  assignedOxygenName?: string;
+  serviceStatuses?: Record<string, any>;
+  quotas?: any;
 }
 
 const normalizeTriagePriority = (priority?: string): EmergencyCase['triagePriority'] => {
@@ -618,7 +625,7 @@ function CareBridgeApp() {
           ...c,
           caseId: c.caseId,
           patientUid: c.patientUid || c.patientId || currentUser.uid,
-          status: (c.status === 'resolved' || c.status === 'cancelled' ? 'Completed' : 'Active') as any,
+          status: c.status,
           createdAt: new Date(c.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           dateStr: new Date(c.createdAt).toLocaleDateString(),
           patientName: c.patientName,
@@ -649,7 +656,20 @@ function CareBridgeApp() {
               ? 'Oxygen'
               : 'Ambulance Services'
           ),
-          individualStatuses: []
+          individualStatuses: (c.individualStatuses && c.individualStatuses.length > 0)
+            ? c.individualStatuses
+            : (c.resourceRequests && c.resourceRequests.length > 0)
+              ? c.resourceRequests.map((r) => ({
+                  resource: r.resourceType.toUpperCase(),
+                  detail: r.providerName ? `Assigned: ${r.providerName}` : (r.details?.notes || 'Requested'),
+                  status: r.status
+                }))
+              : [
+                  ...(c.assignedHospitalName ? [{ resource: 'Hospital', detail: `Assigned: ${c.assignedHospitalName}`, status: c.status }] : []),
+                  ...(c.assignedAmbulanceName ? [{ resource: 'Ambulance', detail: `Assigned: ${c.assignedAmbulanceName}`, status: c.status }] : []),
+                  ...(c.assignedBloodBankName ? [{ resource: 'Blood Bank', detail: `Assigned: ${c.assignedBloodBankName}`, status: c.status }] : []),
+                  ...(c.assignedOxygenName ? [{ resource: 'Oxygen', detail: `Assigned: ${c.assignedOxygenName}`, status: c.status }] : [])
+                ]
         }));
 
         setCasesList(formatted);
@@ -680,7 +700,7 @@ function CareBridgeApp() {
           ...c,
           caseId: c.caseId,
           patientUid: c.patientUid || c.patientId || currentUser.uid,
-          status: (c.status === 'resolved' || c.status === 'cancelled' ? 'Completed' : 'Active') as any,
+          status: c.status,
           createdAt: new Date(c.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           dateStr: new Date(c.createdAt).toLocaleDateString(),
           patientName: c.patientName,
@@ -711,7 +731,20 @@ function CareBridgeApp() {
               ? 'Oxygen'
               : 'Ambulance Services'
           ),
-          individualStatuses: []
+          individualStatuses: (c.individualStatuses && c.individualStatuses.length > 0)
+            ? c.individualStatuses
+            : (c.resourceRequests && c.resourceRequests.length > 0)
+              ? c.resourceRequests.map((r) => ({
+                  resource: r.resourceType.toUpperCase(),
+                  detail: r.providerName ? `Assigned: ${r.providerName}` : (r.details?.notes || 'Requested'),
+                  status: r.status
+                }))
+              : [
+                  ...(c.assignedHospitalName ? [{ resource: 'Hospital', detail: `Assigned: ${c.assignedHospitalName}`, status: c.status }] : []),
+                  ...(c.assignedAmbulanceName ? [{ resource: 'Ambulance', detail: `Assigned: ${c.assignedAmbulanceName}`, status: c.status }] : []),
+                  ...(c.assignedBloodBankName ? [{ resource: 'Blood Bank', detail: `Assigned: ${c.assignedBloodBankName}`, status: c.status }] : []),
+                  ...(c.assignedOxygenName ? [{ resource: 'Oxygen', detail: `Assigned: ${c.assignedOxygenName}`, status: c.status }] : [])
+                ]
         }));
         setCasesList(formatted);
       }
@@ -1105,7 +1138,7 @@ function CareBridgeApp() {
         createdBy: isAttendantRole ? 'attendant' : 'patient',
         ...(isAttendantRole ? { attendantUid: requesterUid } : {}),
         status: 'Submitted',
-        createdAt: nowTime,
+        createdAt: now.toISOString(),
         dateStr: nowDateStr,
         patientName: patientName.trim(),
         patientAge: patientAge.trim(),
@@ -3519,8 +3552,14 @@ function CareBridgeApp() {
         ) : (() => {
         // Dynamic dashboard calculations from available casesList
         const totalCasesCount = casesList.length;
-        const activeCasesCount = casesList.filter((c) => c.status !== 'Completed' && c.status !== 'Cancelled').length;
-        const completedCasesCount = casesList.filter((c) => c.status === 'Completed').length;
+        const activeCasesCount = casesList.filter((c) => {
+          const s = String(c.status || '').toUpperCase();
+          return s !== 'COMPLETED' && s !== 'RESOLVED' && s !== 'CANCELLED' && s !== 'REJECTED';
+        }).length;
+        const completedCasesCount = casesList.filter((c) => {
+          const s = String(c.status || '').toUpperCase();
+          return s === 'COMPLETED' || s === 'RESOLVED';
+        }).length;
         const pendingResourceCount = casesList.reduce((acc, c) => {
           const pendingInCase = c.individualStatuses?.filter(
             (s) => s.code === 'pending' || s.code === 'in-review' || s.code === 'reserved'
@@ -3529,7 +3568,10 @@ function CareBridgeApp() {
         }, 0);
 
         // Active case to highlight in Resource Request Summary (either first active case or submittedCase)
-        const primaryActiveCase = casesList.find((c) => c.status !== 'Completed' && c.status !== 'Cancelled') || casesList[0] || null;
+        const primaryActiveCase = casesList.find((c) => {
+          const s = String(c.status || '').toUpperCase();
+          return s !== 'COMPLETED' && s !== 'RESOLVED' && s !== 'CANCELLED';
+        }) || casesList[0] || null;
 
         // Triage badge helper
         const getTriageBadge = (priority: string) => {
@@ -3560,6 +3602,88 @@ function CareBridgeApp() {
                 </span>
               );
           }
+        };
+
+        // Emergency Case lifecycle status badge helper
+        const getCaseStatusBadge = (status?: string, rejectionReason?: string) => {
+          const s = String(status || '').toUpperCase();
+          if (s === 'COMPLETED' || s === 'RESOLVED') {
+            return (
+              <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-1">
+                <CheckCheck className="h-3 w-3 text-emerald-600" />
+                Completed
+              </span>
+            );
+          }
+          if (s === 'DISPATCHED') {
+            return (
+              <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-100 text-amber-900 border border-amber-300 flex items-center gap-1 shadow-xs animate-pulse">
+                <span className="h-1.5 w-1.5 rounded-full bg-amber-600 animate-ping" />
+                Ambulance Dispatched (En Route)
+              </span>
+            );
+          }
+          if (s === 'IN_PROGRESS') {
+            return (
+              <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-teal-100 text-teal-900 border border-teal-300 flex items-center gap-1 shadow-xs">
+                <span className="h-1.5 w-1.5 rounded-full bg-teal-600 animate-pulse" />
+                Emergency Response In Progress
+              </span>
+            );
+          }
+          if (s === 'ASSIGNED') {
+            return (
+              <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-blue-100 text-blue-800 border border-blue-300 flex items-center gap-1">
+                <span className="h-1.5 w-1.5 rounded-full bg-blue-600" />
+                Providers Assigned
+              </span>
+            );
+          }
+          if (s === 'ACCEPTED') {
+            return (
+              <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-indigo-100 text-indigo-800 border border-indigo-300 flex items-center gap-1">
+                <Check className="h-3 w-3 text-indigo-600" />
+                Dispatch Accepted
+              </span>
+            );
+          }
+          if (s === 'RESOURCE_CONFIRMED') {
+            return (
+              <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-cyan-100 text-cyan-800 border border-cyan-300 flex items-center gap-1">
+                <Check className="h-3 w-3 text-cyan-600" />
+                Resources Confirmed
+              </span>
+            );
+          }
+          if (s === 'UNDER_REVIEW') {
+            return (
+              <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-purple-100 text-purple-800 border border-purple-300 flex items-center gap-1">
+                <Clock className="h-3 w-3 text-purple-600" />
+                Under Coordinator Review
+              </span>
+            );
+          }
+          if (s === 'REJECTED') {
+            return (
+              <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-rose-100 text-rose-800 border border-rose-300 flex items-center gap-1" title={rejectionReason}>
+                <X className="h-3 w-3 text-rose-600" />
+                Declined {rejectionReason ? `(${rejectionReason})` : ''}
+              </span>
+            );
+          }
+          if (s === 'CANCELLED') {
+            return (
+              <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-slate-100 text-slate-700 border border-slate-300 flex items-center gap-1">
+                Cancelled
+              </span>
+            );
+          }
+          return (
+            <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-50 text-amber-800 border border-amber-200 flex items-center gap-1">
+              <Clock className="h-3 w-3 text-amber-600 animate-spin" />
+              Awaiting Coordinator Review
+            </span>
+          );
         };
 
         return (
@@ -3964,17 +4088,7 @@ function CareBridgeApp() {
                               </div>
 
                               <div className="flex items-center gap-2">
-                                {c.status === 'Completed' ? (
-                                  <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-slate-100 text-slate-700 border border-slate-300 flex items-center gap-1">
-                                    <CheckCheck className="h-3 w-3 text-emerald-600" />
-                                    Completed
-                                  </span>
-                                ) : (
-                                  <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-teal-50 text-teal-800 border border-teal-200 flex items-center gap-1">
-                                    <span className="h-1.5 w-1.5 rounded-full bg-teal-600 animate-ping" />
-                                    Active Dispatch
-                                  </span>
-                                )}
+                                {getCaseStatusBadge(c.status, c.rejectionReason)}
                               </div>
                             </div>
 
@@ -4013,6 +4127,31 @@ function CareBridgeApp() {
                                   <span>Attendant: {c.attendantName} ({c.attendantRelation})</span>
                                 </span>
                               </div>
+
+                              {(c.assignedHospitalName || c.assignedAmbulanceName || c.assignedBloodBankName || c.assignedOxygenName) && (
+                                <div className="mt-2 pt-2 border-t border-slate-100 flex flex-wrap gap-1.5 text-[11px]">
+                                  {c.assignedHospitalName && (
+                                    <span className="bg-blue-50 text-blue-800 px-2 py-0.5 rounded font-semibold border border-blue-200">
+                                      🏥 Hospital: {c.assignedHospitalName}
+                                    </span>
+                                  )}
+                                  {c.assignedAmbulanceName && (
+                                    <span className="bg-amber-50 text-amber-900 px-2 py-0.5 rounded font-semibold border border-amber-200">
+                                      🚑 Ambulance: {c.assignedAmbulanceName}
+                                    </span>
+                                  )}
+                                  {c.assignedBloodBankName && (
+                                    <span className="bg-rose-50 text-rose-800 px-2 py-0.5 rounded font-semibold border border-rose-200">
+                                      🩸 Blood Bank: {c.assignedBloodBankName}
+                                    </span>
+                                  )}
+                                  {c.assignedOxygenName && (
+                                    <span className="bg-sky-50 text-sky-800 px-2 py-0.5 rounded font-semibold border border-sky-200">
+                                      💨 Oxygen: {c.assignedOxygenName}
+                                    </span>
+                                  )}
+                                </div>
+                              )}
                             </div>
 
                             {/* Card Footer: Resources Requested + View Details Action */}
@@ -4728,9 +4867,9 @@ function CareBridgeApp() {
                       <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wide block">
                         Case Status
                       </span>
-                      <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-white border border-teal-300 text-teal-800 inline-block mt-1">
-                        {selectedDashboardCase.status || 'Active Dispatch'}
-                      </span>
+                      <div className="mt-1">
+                        {getCaseStatusBadge(selectedDashboardCase.status, selectedDashboardCase.rejectionReason)}
+                      </div>
                     </div>
                   </div>
 
@@ -4761,8 +4900,32 @@ function CareBridgeApp() {
                       <span className="font-semibold text-slate-900">{selectedDashboardCase.incidentAddress}</span>
                     </div>
                     <div>
-                      <span className="text-slate-500 font-medium">Assigned Provider:</span>{' '}
-                      <span className="font-bold text-[#00707E]">{selectedDashboardCase.providerName}</span>
+                      <span className="text-slate-500 font-medium">Assigned Healthcare Providers:</span>{' '}
+                      <div className="mt-1 flex flex-wrap gap-1.5">
+                        {selectedDashboardCase.assignedHospitalName && (
+                          <span className="bg-blue-50 text-blue-800 px-2 py-0.5 rounded font-semibold border border-blue-200">
+                            🏥 Hospital: {selectedDashboardCase.assignedHospitalName}
+                          </span>
+                        )}
+                        {selectedDashboardCase.assignedAmbulanceName && (
+                          <span className="bg-amber-50 text-amber-900 px-2 py-0.5 rounded font-semibold border border-amber-200">
+                            🚑 Ambulance: {selectedDashboardCase.assignedAmbulanceName}
+                          </span>
+                        )}
+                        {selectedDashboardCase.assignedBloodBankName && (
+                          <span className="bg-rose-50 text-rose-800 px-2 py-0.5 rounded font-semibold border border-rose-200">
+                            🩸 Blood Bank: {selectedDashboardCase.assignedBloodBankName}
+                          </span>
+                        )}
+                        {selectedDashboardCase.assignedOxygenName && (
+                          <span className="bg-sky-50 text-sky-800 px-2 py-0.5 rounded font-semibold border border-sky-200">
+                            💨 Oxygen: {selectedDashboardCase.assignedOxygenName}
+                          </span>
+                        )}
+                        {!selectedDashboardCase.assignedHospitalName && !selectedDashboardCase.assignedAmbulanceName && !selectedDashboardCase.assignedBloodBankName && !selectedDashboardCase.assignedOxygenName && (
+                          <span className="text-slate-400 italic font-normal">Coordinator assigning providers...</span>
+                        )}
+                      </div>
                     </div>
                   </div>
 

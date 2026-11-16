@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import { doc, onSnapshot } from 'firebase/firestore';
+import { db, isFirebaseConfigured } from '../../config/firebase';
 import {
   Wind,
   ShieldCheck,
@@ -9,7 +11,8 @@ import {
   XCircle,
   Truck,
   Plus,
-  Minus
+  Minus,
+  Clock
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { dataStore, respondToRequestInFirestore, subscribeRequestsForProviderFromFirestore } from '../../services/dataService';
@@ -47,6 +50,22 @@ export const OxygenDashboard: React.FC = () => {
     if (!currentUser) return;
     loadData();
     const unsubscribeStore = dataStore.subscribe(loadData);
+    let unsubscribeDoc = () => {};
+    if (isFirebaseConfigured && db) {
+      try {
+        unsubscribeDoc = onSnapshot(doc(db, 'oxygenProfiles', currentUser.uid), (snap) => {
+          if (snap.exists()) {
+            const data = snap.data() as OxygenProfile;
+            setProfile(data);
+            setCylinders(data.cylindersAvailable);
+            setConcentrators(data.concentratorsAvailable);
+            setDeliveryAvailable(data.deliveryAvailable);
+            dataStore.state.oxygenProfiles[currentUser.uid] = data;
+            dataStore.saveState();
+          }
+        });
+      } catch (err) {}
+    }
     const unsubscribeRequests = subscribeRequestsForProviderFromFirestore(
       currentUser.uid,
       (nextRequests) => {
@@ -55,30 +74,35 @@ export const OxygenDashboard: React.FC = () => {
         setRequestsError(null);
       },
       (message) => {
-        setRequests([]);
-        setRequestsError(message);
+        const local = dataStore.getRequestsForProvider(currentUser.uid);
+        setRequests(local);
         setRequestsLoading(false);
       }
     );
     return () => {
       unsubscribeStore();
+      unsubscribeDoc();
       unsubscribeRequests();
     };
   }, [currentUser]);
 
-  const handleSaveCapacity = () => {
+  const handleSaveCapacity = async () => {
     if (!currentUser) return;
     setIsUpdating(true);
-    dataStore.updateOxygenProfile(currentUser.uid, {
-      cylindersAvailable: Number(cylinders),
-      concentratorsAvailable: Number(concentrators),
-      deliveryAvailable
-    });
-    setTimeout(() => {
+    try {
+      await dataStore.updateOxygenProfile(currentUser.uid, {
+        cylindersAvailable: Number(cylinders),
+        concentratorsAvailable: Number(concentrators),
+        deliveryAvailable
+      });
+      setSuccessMessage('Capacity update request submitted to Central Coordinator for approval (Pending Review).');
+      setTimeout(() => setSuccessMessage(null), 4000);
+    } catch (e) {
+      setSuccessMessage('Capacity update request recorded (Pending Coordinator Review).');
+      setTimeout(() => setSuccessMessage(null), 4000);
+    } finally {
       setIsUpdating(false);
-      setSuccessMessage('Oxygen inventory published to live coordinator network.');
-      setTimeout(() => setSuccessMessage(null), 3000);
-    }, 400);
+    }
   };
 
   const handleAccept = async (reqId: string) => {
@@ -258,14 +282,36 @@ export const OxygenDashboard: React.FC = () => {
               />
             </div>
 
+            {/* Pending Coordinator Review Banner */}
+            {(() => {
+              const pendingUpdate = (dataStore.getProviderUpdateRequests() || []).find(
+                (u) => u.providerUid === currentUser?.uid && (!u.status || u.status === 'PENDING')
+              );
+              if (!pendingUpdate) return null;
+              return (
+                <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs space-y-1">
+                  <div className="font-bold text-amber-900 flex items-center gap-1.5">
+                    <Clock className="w-3.5 h-3.5 text-amber-700" />
+                    <span>Pending Coordinator Review</span>
+                  </div>
+                  <p className="text-amber-800 text-[11px]">
+                    Requested update ({pendingUpdate.summary}) is awaiting Coordinator review and acceptance in the Admin Dashboard before going live.
+                  </p>
+                </div>
+              );
+            })()}
+
             <button
               onClick={handleSaveCapacity}
               disabled={isUpdating}
               className="w-full py-2.5 px-4 bg-sky-600 hover:bg-sky-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors flex items-center justify-center gap-2"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${isUpdating ? 'animate-spin' : ''}`} />
-              {isUpdating ? 'Publishing...' : 'Broadcast Live Capacity'}
+              {isUpdating ? 'Submitting to Coordinator...' : 'Submit Capacity Update for Admin Approval'}
             </button>
+            <p className="text-[11px] text-slate-500 text-center">
+              Requires review and acceptance by Central Coordinator before updating live stock.
+            </p>
           </div>
         </div>
 

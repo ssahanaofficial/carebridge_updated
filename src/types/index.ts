@@ -450,6 +450,9 @@ export interface NotificationItem {
   id: string;
   recipientUid: string;
   type:
+    | 'case_created'
+    | 'case_assigned'
+    | 'case_updated'
     | 'request_received'
     | 'request_assigned'
     | 'request_accepted'
@@ -459,6 +462,9 @@ export interface NotificationItem {
     | 'ambulance_dispatched'
     | 'ambulance_updated'
     | 'provider_verified'
+    | 'provider_data_updated'
+    | 'provider_update_approved'
+    | 'provider_update_rejected'
     | 'system_alert';
   title: string;
   message: string;
@@ -491,4 +497,19 @@ export interface ClinicalNote {
     temp?: string;
   };
   createdAt: string;
+}
+
+export interface ProviderUpdateRequest {
+  id: string;
+  providerUid: string;
+  providerName: string;
+  providerRole: UserRole;
+  updateType: 'capacity_update' | 'inventory_update' | 'fleet_update';
+  details: Record<string, any>;
+  summary: string;
+  timestamp: string;
+  status: 'PENDING' | 'APPROVED' | 'REJECTED';
+  adminNote?: string;
+  reviewedByUid?: string;
+  reviewedAt?: string;
 }

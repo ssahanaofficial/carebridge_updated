@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Shield,
   Users,
@@ -23,10 +23,25 @@ import {
   ChevronRight,
   ExternalLink,
   Sliders,
-  Send
+  Send,
+  Edit2,
+  XCircle,
+  CheckCircle
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
-import { dataStore, getAllowedEmergencyCaseTransitions } from '../../services/dataService';
+import {
+  dataStore,
+  getAllowedEmergencyCaseTransitions,
+  subscribeHospitalProfilesFromFirestore,
+  subscribeBloodBankProfilesFromFirestore,
+  subscribeOxygenProfilesFromFirestore,
+  subscribeAmbulanceProfilesFromFirestore,
+  subscribeProviderUpdateRequests,
+  INITIAL_HOSPITAL,
+  INITIAL_BLOOD_BANK,
+  INITIAL_OXYGEN,
+  INITIAL_AMBULANCE
+} from '../../services/dataService';
 import type {
   UserProfile,
   EmergencyCase,
@@ -39,7 +54,8 @@ import type {
   EmergencyPriority,
   ResourceAssignmentAudit,
   EmergencyLifecycleEvent,
-  EmergencyLifecycleStatus
+  EmergencyLifecycleStatus,
+  ProviderUpdateRequest
 } from '../../types';
 import type { EligibleResourceProvider } from '../../services/dataService';
 
@@ -70,6 +86,7 @@ export const AdminDashboard: React.FC = () => {
   const [bloodBanks, setBloodBanks] = useState<BloodBankProfile[]>([]);
   const [oxygenDepots, setOxygenDepots] = useState<OxygenProfile[]>([]);
   const [ambulances, setAmbulances] = useState<AmbulanceProfile[]>([]);
+  const [providerUpdates, setProviderUpdates] = useState<ProviderUpdateRequest[]>([]);
   const [coordinatorCases, setCoordinatorCases] = useState<EmergencyCase[]>([]);
   const [coordinatorRequests, setCoordinatorRequests] = useState<ResourceRequest[]>([]);
   const [coordinatorLoading, setCoordinatorLoading] = useState(true);
@@ -116,25 +133,47 @@ export const AdminDashboard: React.FC = () => {
   const [assignNote, setAssignNote] = useState('');
   const [isSubmittingAssignment, setIsSubmittingAssignment] = useState(false);
 
+  // Provider capacity update review & adjustment state
+  const [editingUpdateId, setEditingUpdateId] = useState<string | null>(null);
+  const [adjustedDetails, setAdjustedDetails] = useState<Record<string, any>>({});
+  const [adminReviewNotes, setAdminReviewNotes] = useState<Record<string, string>>({});
+  const [processingUpdateId, setProcessingUpdateId] = useState<string | null>(null);
+
   const loadData = () => {
     setUsers(dataStore.getUsers());
     setCases(dataStore.getCases());
+    setCoordinatorCases(dataStore.getCases());
     setRequests(dataStore.getRequests());
+    setCoordinatorRequests(dataStore.getRequests());
     setHospitals(dataStore.getAllHospitalProfiles());
     setBloodBanks(dataStore.getAllBloodBankProfiles());
     setOxygenDepots(dataStore.getAllOxygenProfiles());
     setAmbulances(dataStore.getAllAmbulanceProfiles());
+    setProviderUpdates(dataStore.getProviderUpdateRequests());
   };
 
   useEffect(() => {
     loadData();
     const unsubscribeLocal = dataStore.subscribe(loadData);
+    const unsubHosp = subscribeHospitalProfilesFromFirestore(setHospitals);
+    const unsubBlood = subscribeBloodBankProfilesFromFirestore(setBloodBanks);
+    const unsubOxy = subscribeOxygenProfilesFromFirestore(setOxygenDepots);
+    const unsubAmb = subscribeAmbulanceProfilesFromFirestore(setAmbulances);
+    const unsubUpdates = subscribeProviderUpdateRequests(setProviderUpdates);
+
     if (!currentUser || currentUser.role !== 'admin') {
       setCoordinatorCases([]);
       setCoordinatorRequests([]);
       setCoordinatorLoading(false);
       setCoordinatorError('Coordinator data requires an authenticated admin account.');
-      return unsubscribeLocal;
+      return () => {
+        unsubscribeLocal();
+        unsubHosp();
+        unsubBlood();
+        unsubOxy();
+        unsubAmb();
+        unsubUpdates();
+      };
     }
 
     let receivedUsers = false;
@@ -150,11 +189,13 @@ export const AdminDashboard: React.FC = () => {
       },
       (records) => {
         setCoordinatorCases(records);
+        setCases(records);
         receivedCases = true;
         if (receivedUsers && receivedRequests) setCoordinatorLoading(false);
       },
       (records) => {
         setCoordinatorRequests(records);
+        setRequests(records);
         receivedRequests = true;
         if (receivedUsers && receivedCases) setCoordinatorLoading(false);
       },
@@ -166,8 +207,87 @@ export const AdminDashboard: React.FC = () => {
     return () => {
       unsubscribe();
       unsubscribeLocal();
+      unsubHosp();
+      unsubBlood();
+      unsubOxy();
+      unsubAmb();
+      unsubUpdates();
     };
   }, [currentUser?.uid, currentUser?.role, coordinatorRefresh]);
+
+  // Helper to verify a genuine healthcare facility institution (not an individual user login or test account)
+  const isAuthenticFacility = (name?: string, uid?: string) => {
+    if (!name || name.trim().length < 3) return false;
+    const lower = name.toLowerCase().trim();
+
+    // Default canonical verified system facilities
+    const defaultUids = ['blood-demo-01', 'hosp-demo-01', 'oxy-demo-01', 'prov-oxygen-01', 'amb-demo-01'];
+    if (uid && defaultUids.includes(uid)) return true;
+
+    // Explicitly reject known personal usernames / test handles
+    const blacklistedNames = [
+      'sqq', 'sq', 'vasuki', 'bbb', 'shweta', 'priya', 'sahana', 'ooo', 'rrr',
+      'surabhi kulk', 'surabhi kulkarni', 'admin', 'coordinator', 'test', 'demo',
+      'user', 'patient', 'doctor'
+    ];
+    if (blacklistedNames.includes(lower)) return false;
+
+    // Genuine facilities MUST have institutional/healthcare keywords in their name
+    const facilityKeywords = [
+      'hospital', 'centre', 'center', 'bank', 'blood', 'oxygen', 'ambulance',
+      'medical', 'health', 'care', 'clinic', 'depot', 'gas', 'distributor',
+      'trust', 'foundation', 'red cross', 'kims', 'sdm', 'rotary', 'emergency'
+    ];
+    return facilityKeywords.some((kw) => lower.includes(kw));
+  };
+
+  const allHospitals = useMemo(() => {
+    const map = new Map<string, HospitalProfile>();
+    map.set(INITIAL_HOSPITAL.hospitalName.toLowerCase().trim(), INITIAL_HOSPITAL);
+    hospitals
+      .filter((h) => isAuthenticFacility(h.hospitalName, h.uid))
+      .forEach((h) => {
+        const key = h.hospitalName.toLowerCase().trim();
+        if (!map.has(key)) map.set(key, h);
+      });
+    return Array.from(map.values());
+  }, [hospitals]);
+
+  const allBloodBanks = useMemo(() => {
+    const map = new Map<string, BloodBankProfile>();
+    map.set(INITIAL_BLOOD_BANK.bankName.toLowerCase().trim(), INITIAL_BLOOD_BANK);
+    bloodBanks
+      .filter((b) => isAuthenticFacility(b.bankName, b.uid))
+      .forEach((b) => {
+        const key = b.bankName.toLowerCase().trim();
+        if (!map.has(key)) map.set(key, b);
+      });
+    return Array.from(map.values());
+  }, [bloodBanks]);
+
+  const allOxygenDepots = useMemo(() => {
+    const map = new Map<string, OxygenProfile>();
+    map.set(INITIAL_OXYGEN.providerName.toLowerCase().trim(), INITIAL_OXYGEN);
+    oxygenDepots
+      .filter((o) => isAuthenticFacility(o.providerName, o.uid))
+      .forEach((o) => {
+        const key = o.providerName.toLowerCase().trim();
+        if (!map.has(key)) map.set(key, o);
+      });
+    return Array.from(map.values());
+  }, [oxygenDepots]);
+
+  const allAmbulances = useMemo(() => {
+    const map = new Map<string, AmbulanceProfile>();
+    map.set(INITIAL_AMBULANCE.providerName.toLowerCase().trim(), INITIAL_AMBULANCE);
+    ambulances
+      .filter((a) => isAuthenticFacility(a.providerName, a.uid))
+      .forEach((a) => {
+        const key = a.providerName.toLowerCase().trim();
+        if (!map.has(key)) map.set(key, a);
+      });
+    return Array.from(map.values());
+  }, [ambulances]);
 
   const handleVerify = async (uid: string, verify: boolean) => {
     setSuccessMessage(null);
@@ -182,6 +302,54 @@ export const AdminDashboard: React.FC = () => {
       setErrorMessage(error instanceof Error ? error.message : 'Provider verification could not be updated.');
     } finally {
       setVerifyingUid(null);
+    }
+  };
+
+  const handleStartAdjusting = (update: ProviderUpdateRequest) => {
+    setEditingUpdateId(update.id);
+    setAdjustedDetails({ ...(update.details || {}) });
+  };
+
+  const handleCancelAdjusting = () => {
+    setEditingUpdateId(null);
+    setAdjustedDetails({});
+  };
+
+  const handleApproveUpdateRequest = async (update: ProviderUpdateRequest) => {
+    setProcessingUpdateId(update.id);
+    setSuccessMessage(null);
+    setErrorMessage(null);
+    try {
+      const valuesToApply = editingUpdateId === update.id ? adjustedDetails : update.details;
+      const note = adminReviewNotes[update.id] || '';
+      await dataStore.approveProviderUpdateRequest(update.id, valuesToApply, note);
+      setEditingUpdateId(null);
+      setSuccessMessage(`Capacity update for ${update.providerName} APPROVED & applied live to network.`);
+      setTimeout(() => setSuccessMessage(null), 4000);
+      loadData();
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : 'Failed to approve update request.');
+    } finally {
+      setProcessingUpdateId(null);
+    }
+  };
+
+  const handleRejectUpdateRequest = async (update: ProviderUpdateRequest) => {
+    const reason = window.prompt(`Enter rejection reason for ${update.providerName}:`, 'Capacity verification unconfirmed');
+    if (reason === null) return;
+    setProcessingUpdateId(update.id);
+    setSuccessMessage(null);
+    setErrorMessage(null);
+    try {
+      await dataStore.rejectProviderUpdateRequest(update.id, reason || 'Declined by coordinator');
+      if (editingUpdateId === update.id) setEditingUpdateId(null);
+      setSuccessMessage(`Update request from ${update.providerName} DECLINED.`);
+      setTimeout(() => setSuccessMessage(null), 4000);
+      loadData();
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : 'Failed to decline update request.');
+    } finally {
+      setProcessingUpdateId(null);
     }
   };
 
@@ -365,15 +533,16 @@ export const AdminDashboard: React.FC = () => {
   // Filtered cases list
   const filteredCases = cases.filter((c) => {
     const matchesSearch =
-      c.caseId.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      c.patientName.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (c.caseId || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (c.patientName || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
       (c.conditionSummary || c.patientCondition || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-      c.location?.address.toLowerCase().includes(searchQuery.toLowerCase());
+      (c.location?.address || c.incidentAddress || '').toLowerCase().includes(searchQuery.toLowerCase());
 
     const matchesStatus =
       statusFilter === 'all' ||
       (statusFilter === 'active' && c.status !== 'COMPLETED' && c.status !== 'resolved' && c.status !== 'cancelled') ||
-      c.status === statusFilter;
+      c.status === statusFilter ||
+      (statusFilter === 'REQUESTED' && (c.status === 'Submitted' || String(c.status).toLowerCase() === 'pending'));
 
     const matchesPriority =
       priorityFilter === 'all' ||
@@ -408,7 +577,7 @@ export const AdminDashboard: React.FC = () => {
     const matchesPriority = coordinatorPriorityFilter === 'all' ||
       (emergencyCase.priority || emergencyCase.urgencyLevel) === coordinatorPriorityFilter;
     const matchesStatus = coordinatorStatusFilter === 'all' || emergencyCase.status === coordinatorStatusFilter;
-    const createdDate = emergencyCase.createdAt.slice(0, 10);
+    const createdDate = (emergencyCase.createdAt || '').slice(0, 10);
     const matchesFrom = !dateFromFilter || createdDate >= dateFromFilter;
     const matchesTo = !dateToFilter || createdDate <= dateToFilter;
     const matchesResource = resourceFilter === 'all' || coordinatorRequests.some((request) =>
@@ -728,7 +897,7 @@ export const AdminDashboard: React.FC = () => {
           }`}
         >
           <Building2 className="w-4 h-4" />
-          <span>Provider Capacities & Verification ({pendingVerificationProviders.length})</span>
+          <span>Provider Capacities & Verification ({pendingVerificationProviders.length + providerUpdates.filter((u) => !u.status || u.status === 'PENDING').length})</span>
         </button>
 
         <button
@@ -841,8 +1010,11 @@ export const AdminDashboard: React.FC = () => {
                       )}
                       <span className="text-xs text-slate-400 flex items-center gap-1 ml-auto lg:ml-0">
                         <Clock className="w-3.5 h-3.5" />
-                        {new Date(c.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} •{' '}
-                        {new Date(c.createdAt).toLocaleDateString()}
+                        {(() => {
+                          const d = new Date(c.createdAt);
+                          if (Number.isNaN(d.getTime())) return c.createdAt || c.dateStr || 'Just now';
+                          return `${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} • ${d.toLocaleDateString()}`;
+                        })()}
                       </span>
                     </div>
 
@@ -935,6 +1107,268 @@ export const AdminDashboard: React.FC = () => {
       {/* TAB 2: PROVIDER CAPACITIES & VERIFICATION */}
       {activeTab === 'providers' && (
         <div className="space-y-6">
+          {/* Live Provider Data Updates & Requests Queue */}
+          <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-sm space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-100 pb-3 gap-2">
+              <div>
+                <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                  <Activity className="w-5 h-5 text-indigo-600 animate-pulse" /> Live Provider Capacity Updates & Approval Queue
+                  {providerUpdates.filter((u) => !u.status || u.status === 'PENDING').length > 0 && (
+                    <span className="bg-amber-500 text-white text-xs font-bold px-2.5 py-0.5 rounded-full animate-bounce">
+                      {providerUpdates.filter((u) => !u.status || u.status === 'PENDING').length} Pending Coordinator Approval
+                    </span>
+                  )}
+                  {providerUpdates.length > 0 && (
+                    <span className="bg-slate-100 text-slate-700 text-xs font-semibold px-2 py-0.5 rounded-full border border-slate-200">
+                      {providerUpdates.length} Total Requests
+                    </span>
+                  )}
+                </h2>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Real-time inventory and capacity changes transmitted by healthcare providers. Review, adjust values as needed, and approve to broadcast live into the network.
+                </p>
+              </div>
+            </div>
+
+            {providerUpdates.length === 0 ? (
+              <div className="py-6 text-center text-slate-400 text-xs">
+                <Clock className="w-8 h-8 text-slate-300 mx-auto mb-1 opacity-70" />
+                No provider capacity update requests received recently. Live updates will display here automatically.
+              </div>
+            ) : (
+              <div className="space-y-3.5 max-h-[480px] overflow-y-auto pr-1">
+                {providerUpdates.map((update) => {
+                  const isPending = !update.status || update.status === 'PENDING';
+                  const isApproved = update.status === 'APPROVED';
+                  const isRejected = update.status === 'REJECTED';
+                  const isEditing = editingUpdateId === update.id;
+                  const isBusy = processingUpdateId === update.id;
+
+                  return (
+                    <div
+                      key={update.id}
+                      className={`p-4 rounded-2xl border transition-all ${
+                        isPending
+                          ? 'border-amber-200 bg-amber-50/40 shadow-xs'
+                          : isApproved
+                          ? 'border-emerald-200 bg-emerald-50/20'
+                          : 'border-slate-200 bg-slate-50/50'
+                      }`}
+                    >
+                      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                        <div className="space-y-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-bold text-sm text-slate-900">{update.providerName}</span>
+                            <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded bg-indigo-100 text-indigo-800">
+                              {update.providerRole}
+                            </span>
+                            <span className="text-[10px] text-slate-400 font-mono">
+                              {new Date(update.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                          </div>
+
+                          <div className="text-xs text-slate-700 font-medium">
+                            <span className="text-slate-500 font-normal">Requested Inventory / Capacity: </span>
+                            <span className="font-semibold text-slate-900">{update.summary}</span>
+                          </div>
+
+                          {update.adminNote && (
+                            <p className="text-[11px] text-slate-500 italic">
+                              Coordinator Note: "{update.adminNote}"
+                            </p>
+                          )}
+                        </div>
+
+                        {/* Status Badges */}
+                        <div className="shrink-0">
+                          {isPending && (
+                            <span className="inline-flex items-center gap-1 text-[11px] font-bold text-amber-800 bg-amber-100 border border-amber-300 px-2.5 py-1 rounded-full shadow-xs">
+                              <Clock className="w-3.5 h-3.5" /> Awaiting Coordinator Review
+                            </span>
+                          )}
+                          {isApproved && (
+                            <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-800 bg-emerald-100 border border-emerald-300 px-2.5 py-1 rounded-full">
+                              <CheckCircle className="w-3.5 h-3.5 text-emerald-600" /> Approved & Synced Live
+                            </span>
+                          )}
+                          {isRejected && (
+                            <span className="inline-flex items-center gap-1 text-[11px] font-bold text-rose-800 bg-rose-100 border border-rose-300 px-2.5 py-1 rounded-full">
+                              <XCircle className="w-3.5 h-3.5 text-rose-600" /> Declined
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Inline Adjustments Section (when admin changes the values before approving) */}
+                      {isPending && isEditing && (
+                        <div className="mt-3 p-3 bg-white rounded-xl border border-amber-200 space-y-3 animate-in fade-in duration-150">
+                          <div className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                            <Edit2 className="w-3.5 h-3.5 text-amber-600" />
+                            <span>Adjust Capacity Values Before Approving</span>
+                          </div>
+
+                          {/* Oxygen Adjustments */}
+                          {update.providerRole === 'oxygenProvider' && (
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                              <div>
+                                <label className="block text-[11px] font-semibold text-slate-600 mb-0.5">Cylinders Available</label>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={adjustedDetails.cylindersAvailable ?? update.details?.cylindersAvailable ?? 0}
+                                  onChange={(e) => setAdjustedDetails((prev) => ({ ...prev, cylindersAvailable: Number(e.target.value) }))}
+                                  className="w-full text-xs p-2 bg-slate-50 border border-slate-200 rounded-lg font-bold"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-[11px] font-semibold text-slate-600 mb-0.5">Concentrators Available</label>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={adjustedDetails.concentratorsAvailable ?? update.details?.concentratorsAvailable ?? 0}
+                                  onChange={(e) => setAdjustedDetails((prev) => ({ ...prev, concentratorsAvailable: Number(e.target.value) }))}
+                                  className="w-full text-xs p-2 bg-slate-50 border border-slate-200 rounded-lg font-bold"
+                                />
+                              </div>
+                              <div className="flex items-center pt-4">
+                                <label className="flex items-center gap-2 text-xs font-semibold text-slate-700 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={Boolean(adjustedDetails.deliveryAvailable ?? update.details?.deliveryAvailable)}
+                                    onChange={(e) => setAdjustedDetails((prev) => ({ ...prev, deliveryAvailable: e.target.checked }))}
+                                    className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                                  />
+                                  <span>Delivery Fleet Available</span>
+                                </label>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Hospital Adjustments */}
+                          {update.providerRole === 'hospital' && (
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                              <div>
+                                <label className="block text-[11px] font-semibold text-slate-600 mb-0.5">Available Beds</label>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={adjustedDetails.availableBeds ?? update.details?.availableBeds ?? 0}
+                                  onChange={(e) => setAdjustedDetails((prev) => ({ ...prev, availableBeds: Number(e.target.value) }))}
+                                  className="w-full text-xs p-2 bg-slate-50 border border-slate-200 rounded-lg font-bold"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-[11px] font-semibold text-slate-600 mb-0.5">Available ICU</label>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={adjustedDetails.availableICU ?? update.details?.availableICU ?? 0}
+                                  onChange={(e) => setAdjustedDetails((prev) => ({ ...prev, availableICU: Number(e.target.value) }))}
+                                  className="w-full text-xs p-2 bg-slate-50 border border-slate-200 rounded-lg font-bold"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-[11px] font-semibold text-slate-600 mb-0.5">Ventilators</label>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={adjustedDetails.availableVentilators ?? update.details?.availableVentilators ?? 0}
+                                  onChange={(e) => setAdjustedDetails((prev) => ({ ...prev, availableVentilators: Number(e.target.value) }))}
+                                  className="w-full text-xs p-2 bg-slate-50 border border-slate-200 rounded-lg font-bold"
+                                />
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Blood Bank Adjustments */}
+                          {update.providerRole === 'bloodBank' && update.details?.inventory && (
+                            <div>
+                              <label className="block text-[11px] font-semibold text-slate-600 mb-1">Blood Units Inventory</label>
+                              <div className="grid grid-cols-4 sm:grid-cols-8 gap-1.5">
+                                {Object.keys(update.details.inventory).map((group) => (
+                                  <div key={group} className="text-center">
+                                    <div className="text-[10px] font-bold text-slate-600">{group}</div>
+                                    <input
+                                      type="number"
+                                      min="0"
+                                      value={adjustedDetails.inventory?.[group] ?? update.details.inventory[group] ?? 0}
+                                      onChange={(e) => {
+                                        const newInv = { ...(adjustedDetails.inventory || update.details.inventory), [group]: Number(e.target.value) };
+                                        setAdjustedDetails((prev) => ({ ...prev, inventory: newInv }));
+                                      }}
+                                      className="w-full text-xs p-1 text-center bg-slate-50 border border-slate-200 rounded font-bold"
+                                    />
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Coordinator Note Field */}
+                          <div>
+                            <input
+                              type="text"
+                              placeholder="Coordinator note (e.g. Verified via depot phone check)..."
+                              value={adminReviewNotes[update.id] || ''}
+                              onChange={(e) => setAdminReviewNotes((prev) => ({ ...prev, [update.id]: e.target.value }))}
+                              className="w-full text-xs p-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                            />
+                          </div>
+
+                          <div className="flex items-center justify-end gap-2 pt-1">
+                            <button
+                              type="button"
+                              onClick={handleCancelAdjusting}
+                              className="px-3 py-1 text-xs text-slate-600 hover:bg-slate-100 rounded-lg"
+                            >
+                              Cancel Adjustments
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Action Controls for Pending Updates */}
+                      {isPending && (
+                        <div className="mt-3 pt-3 border-t border-amber-200/60 flex flex-wrap items-center justify-end gap-2">
+                          {!isEditing && (
+                            <button
+                              type="button"
+                              onClick={() => handleStartAdjusting(update)}
+                              className="px-3 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold flex items-center gap-1.5 transition-colors"
+                            >
+                              <Edit2 className="w-3 h-3 text-slate-500" />
+                              <span>Adjust Numbers</span>
+                            </button>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={() => handleRejectUpdateRequest(update)}
+                            disabled={isBusy}
+                            className="px-3 py-1.5 rounded-lg border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold flex items-center gap-1.5 transition-colors"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                            <span>Decline Request</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => handleApproveUpdateRequest(update)}
+                            disabled={isBusy}
+                            className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1.5 shadow-xs transition-colors"
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                            <span>{isBusy ? 'Processing...' : isEditing ? '✓ Approve With Adjusted Values' : '✓ Approve & Broadcast Live'}</span>
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
           {/* Pending Verification Banner */}
           <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-sm space-y-4">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
@@ -1008,11 +1442,11 @@ export const AdminDashboard: React.FC = () => {
                 <span>Hospital Bed & ICU Telemetry</span>
               </h3>
               <div className="space-y-2">
-                {hospitals.map((h) => (
+                {allHospitals.map((h) => (
                   <div key={h.uid} className="p-3 rounded-xl bg-slate-50 border border-slate-100 flex items-center justify-between">
                     <div>
                       <div className="font-bold text-xs text-slate-900">{h.hospitalName}</div>
-                      <div className="text-[11px] text-slate-500">{h.address}</div>
+                      <div className="text-[11px] text-slate-500">{h.address || h.city}</div>
                     </div>
                     <div className="flex items-center gap-3 text-right">
                       <div>
@@ -1036,7 +1470,7 @@ export const AdminDashboard: React.FC = () => {
                 <span>Blood Bank Inventory Telemetry</span>
               </h3>
               <div className="space-y-2">
-                {bloodBanks.map((b) => (
+                {allBloodBanks.map((b) => (
                   <div key={b.uid} className="p-3 rounded-xl bg-slate-50 border border-slate-100 space-y-2">
                     <div className="font-bold text-xs text-slate-900">{b.bankName}</div>
                     <div className="grid grid-cols-4 gap-1.5 text-center">
@@ -1061,11 +1495,11 @@ export const AdminDashboard: React.FC = () => {
                 <span>Oxygen Depot Capacity Telemetry</span>
               </h3>
               <div className="space-y-2">
-                {oxygenDepots.map((o) => (
+                {allOxygenDepots.map((o) => (
                   <div key={o.uid} className="p-3 rounded-xl bg-slate-50 border border-slate-100 flex items-center justify-between">
                     <div>
                       <div className="font-bold text-xs text-slate-900">{o.providerName}</div>
-                      <div className="text-[11px] text-slate-500">{o.address}</div>
+                      <div className="text-[11px] text-slate-500">{o.address || o.city}</div>
                     </div>
                     <div className="flex items-center gap-3 text-right">
                       <div>
@@ -1089,7 +1523,7 @@ export const AdminDashboard: React.FC = () => {
                 <span>Emergency Ambulance Fleet</span>
               </h3>
               <div className="space-y-2">
-                {ambulances.map((a) => (
+                {allAmbulances.map((a) => (
                   <div key={a.uid} className="p-3 rounded-xl bg-slate-50 border border-slate-100 space-y-2">
                     <div className="flex items-center justify-between">
                       <div className="font-bold text-xs text-slate-900">{a.providerName}</div>
@@ -1369,89 +1803,198 @@ export const AdminDashboard: React.FC = () => {
                   <span>{errorMessage}</span>
                 </div>
               )}
-              {/* Hospital Selection */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1 flex items-center gap-1.5">
-                  <Building2 className="w-4 h-4 text-blue-600" />
-                  <span>Designated Receiving Hospital</span>
-                </label>
-                <select
-                  value={assignHospitalId}
-                  onChange={(e) => setAssignHospitalId(e.target.value)}
-                  className="w-full text-xs p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium"
-                >
-                  <option value="">Do Not Assign Hospital</option>
-                  {hospitals.map((h) => (
-                    <option key={h.uid} value={h.uid}>
-                      {h.hospitalName} ({h.availableBeds} beds, {h.availableICU} ICU available)
-                    </option>
-                  ))}
-                </select>
-              </div>
+              {/* Requirements & Demand calculations */}
+              {(() => {
+                const caseReqs = (coordinatorRequests.length > 0 ? coordinatorRequests : requests).filter(
+                  (r) => r.caseId === selectedCase.caseId
+                );
 
-              {/* Ambulance Fleet Selection */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1 flex items-center gap-1.5">
-                  <Truck className="w-4 h-4 text-amber-600" />
-                  <span>Ambulance Dispatch Service</span>
-                </label>
-                <select
-                  value={assignAmbulanceId}
-                  onChange={(e) => setAssignAmbulanceId(e.target.value)}
-                  className="w-full text-xs p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium"
-                >
-                  <option value="">Do Not Assign Ambulance</option>
-                  {ambulances.map((a) => (
-                    <option key={a.uid} value={a.uid}>
-                      {a.providerName} ({a.vehicles.filter((v) => v.isAvailable).length} idle units)
-                    </option>
-                  ))}
-                </select>
-              </div>
+                // Oxygen
+                const caseOxyReq = caseReqs.find((r) => r.resourceType === 'oxygen');
+                const patientOxyCylinders =
+                  caseOxyReq?.details?.cylinders ||
+                  selectedCase.quotas?.oxygenCylindersRequested ||
+                  selectedCase.quotas?.oxygenQuantity ||
+                  (selectedCase.requiredServices?.some((s) => s.toLowerCase().includes('oxygen')) ? 1 : 0);
+                const activeOxyRequests = (coordinatorRequests.length > 0 ? coordinatorRequests : requests).filter(
+                  (r) => r.resourceType === 'oxygen' && !['COMPLETED', 'completed', 'CANCELLED', 'cancelled', 'REJECTED', 'rejected'].includes(r.status)
+                );
+                const totalOxyDemandCylinders = activeOxyRequests.reduce((sum, r) => sum + (r.details?.cylinders || 1), 0);
+                const totalOxyPatientsCount = activeOxyRequests.length;
 
-              {/* Blood Bank Selection */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1 flex items-center gap-1.5">
-                  <Droplet className="w-4 h-4 text-rose-600" />
-                  <span>Blood Bank Requisition</span>
-                </label>
-                <select
-                  value={assignBloodBankId}
-                  onChange={(e) => setAssignBloodBankId(e.target.value)}
-                  className="w-full text-xs p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium"
-                >
-                  <option value="">Do Not Assign Blood Bank</option>
-                  {bloodBanks.map((b) => {
-                    const groupKey = (selectedCase.patientBloodGroup || 'O+') as any;
-                    const availableUnits = (b.inventory as Record<string, number>)?.[groupKey] ?? 0;
-                    return (
-                      <option key={b.uid} value={b.uid}>
-                        {b.bankName} (Group {selectedCase.patientBloodGroup || 'O+'}: {availableUnits} units)
-                      </option>
-                    );
-                  })}
-                </select>
-              </div>
+                // Hospital Beds
+                const caseHospReq = caseReqs.find((r) => ['bed', 'icu', 'hospital_admission'].includes(r.resourceType));
+                const patientBedType = caseHospReq?.details?.bedType || (selectedCase.quotas?.icuRequired ? 'ICU Bed' : 'General/Emergency Bed');
+                const activeBedRequests = (coordinatorRequests.length > 0 ? coordinatorRequests : requests).filter(
+                  (r) => ['bed', 'icu', 'hospital_admission'].includes(r.resourceType) && !['COMPLETED', 'completed', 'CANCELLED', 'cancelled', 'REJECTED', 'rejected'].includes(r.status)
+                );
+                const totalBedPatientsCount = activeBedRequests.length;
 
-              {/* Oxygen Depot Selection */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1 flex items-center gap-1.5">
-                  <Wind className="w-4 h-4 text-sky-600" />
-                  <span>Oxygen Supplier Allocation</span>
-                </label>
-                <select
-                  value={assignOxygenId}
-                  onChange={(e) => setAssignOxygenId(e.target.value)}
-                  className="w-full text-xs p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium"
-                >
-                  <option value="">Do Not Assign Oxygen Supplier</option>
-                  {oxygenDepots.map((o) => (
-                    <option key={o.uid} value={o.uid}>
-                      {o.providerName} ({o.cylindersAvailable} cylinders available)
-                    </option>
-                  ))}
-                </select>
-              </div>
+                // Blood Bank
+                const caseBloodReq = caseReqs.find((r) => r.resourceType === 'blood');
+                const patientBloodGroup = selectedCase.patientBloodGroup || caseBloodReq?.details?.bloodGroup || 'O+';
+                const patientBloodUnits =
+                  caseBloodReq?.details?.units ||
+                  selectedCase.quotas?.bloodUnits ||
+                  selectedCase.quotas?.bloodUnitsRequested ||
+                  (selectedCase.requiredServices?.some((s) => s.toLowerCase().includes('blood')) ? 1 : 0);
+                const activeBloodRequests = (coordinatorRequests.length > 0 ? coordinatorRequests : requests).filter(
+                  (r) => r.resourceType === 'blood' && !['COMPLETED', 'completed', 'CANCELLED', 'cancelled', 'REJECTED', 'rejected'].includes(r.status)
+                );
+                const totalBloodDemandUnits = activeBloodRequests.reduce((sum, r) => sum + (r.details?.units || 1), 0);
+                const totalBloodPatientsCount = activeBloodRequests.length;
+
+                // Ambulance
+                const caseAmbReq = caseReqs.find((r) => r.resourceType === 'ambulance');
+                const patientAmbType = caseAmbReq?.details?.vehicleType || selectedCase.quotas?.ambulanceType || 'ALS/BLS Emergency Unit';
+                const activeAmbRequests = (coordinatorRequests.length > 0 ? coordinatorRequests : requests).filter(
+                  (r) => r.resourceType === 'ambulance' && !['COMPLETED', 'completed', 'CANCELLED', 'cancelled', 'REJECTED', 'rejected'].includes(r.status)
+                );
+                const totalAmbPatientsCount = activeAmbRequests.length;
+
+                return (
+                  <>
+                    {/* Hospital Selection */}
+                    <div className="p-3 bg-blue-50/50 rounded-2xl border border-blue-100 space-y-2">
+                      <div className="flex flex-wrap items-center justify-between gap-1.5">
+                        <label className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                          <Building2 className="w-4 h-4 text-blue-600" />
+                          <span>Designated Receiving Hospital</span>
+                        </label>
+                        <div className="flex items-center gap-1.5 text-[11px]">
+                          <span className="px-2 py-0.5 rounded-full font-bold bg-blue-100 text-blue-800 border border-blue-200">
+                            Patient Needs: {patientBedType}
+                          </span>
+                          <span className="px-2 py-0.5 rounded-full font-semibold bg-white text-slate-600 border border-slate-200">
+                            Network Demand: {totalBedPatientsCount} active patient{totalBedPatientsCount === 1 ? '' : 's'}
+                          </span>
+                        </div>
+                      </div>
+                      <select
+                        value={assignHospitalId}
+                        onChange={(e) => setAssignHospitalId(e.target.value)}
+                        className="w-full text-xs p-2.5 bg-white border border-slate-200 rounded-xl text-slate-900 font-medium focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                      >
+                        <option value="">Do Not Assign Hospital</option>
+                        {allHospitals.map((h) => (
+                          <option key={h.uid} value={h.uid}>
+                            {h.hospitalName} — {h.availableBeds} beds in stock ({h.availableICU} ICU) • Patient needs {patientBedType}
+                          </option>
+                        ))}
+                      </select>
+                      {allHospitals.length === 0 && (
+                        <p className="text-[11px] text-amber-700 italic">No verified hospitals found. Approve provider verification in Tab 2.</p>
+                      )}
+                    </div>
+
+                    {/* Ambulance Fleet Selection */}
+                    <div className="p-3 bg-amber-50/50 rounded-2xl border border-amber-100 space-y-2">
+                      <div className="flex flex-wrap items-center justify-between gap-1.5">
+                        <label className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                          <Truck className="w-4 h-4 text-amber-600" />
+                          <span>Ambulance Dispatch Service</span>
+                        </label>
+                        <div className="flex items-center gap-1.5 text-[11px]">
+                          <span className="px-2 py-0.5 rounded-full font-bold bg-amber-100 text-amber-900 border border-amber-200">
+                            Patient Needs: {patientAmbType}
+                          </span>
+                          <span className="px-2 py-0.5 rounded-full font-semibold bg-white text-slate-600 border border-slate-200">
+                            Network Demand: {totalAmbPatientsCount} active patient{totalAmbPatientsCount === 1 ? '' : 's'}
+                          </span>
+                        </div>
+                      </div>
+                      <select
+                        value={assignAmbulanceId}
+                        onChange={(e) => setAssignAmbulanceId(e.target.value)}
+                        className="w-full text-xs p-2.5 bg-white border border-slate-200 rounded-xl text-slate-900 font-medium focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                      >
+                        <option value="">Do Not Assign Ambulance</option>
+                        {allAmbulances.map((a) => {
+                          const idleCount = a.vehicles?.filter((v) => v.isAvailable).length || 0;
+                          return (
+                            <option key={a.uid} value={a.uid}>
+                              {a.providerName} — {idleCount} vehicles available ({a.vehicles?.length || 0} fleet) • Patient needs {patientAmbType}
+                            </option>
+                          );
+                        })}
+                      </select>
+                      {allAmbulances.length === 0 && (
+                        <p className="text-[11px] text-amber-700 italic">No verified ambulance fleets found. Approve provider verification in Tab 2.</p>
+                      )}
+                    </div>
+
+                    {/* Blood Bank Selection */}
+                    <div className="p-3 bg-rose-50/50 rounded-2xl border border-rose-100 space-y-2">
+                      <div className="flex flex-wrap items-center justify-between gap-1.5">
+                        <label className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                          <Droplet className="w-4 h-4 text-rose-600" />
+                          <span>Blood Bank Requisition</span>
+                        </label>
+                        <div className="flex items-center gap-1.5 text-[11px]">
+                          <span className="px-2 py-0.5 rounded-full font-bold bg-rose-100 text-rose-800 border border-rose-200">
+                            Patient Needs: Group {patientBloodGroup} ({patientBloodUnits} Unit{patientBloodUnits > 1 ? 's' : ''})
+                          </span>
+                          <span className="px-2 py-0.5 rounded-full font-semibold bg-white text-slate-600 border border-slate-200">
+                            Network Demand: {totalBloodPatientsCount} patient{totalBloodPatientsCount === 1 ? '' : 's'} ({totalBloodDemandUnits} units)
+                          </span>
+                        </div>
+                      </div>
+                      <select
+                        value={assignBloodBankId}
+                        onChange={(e) => setAssignBloodBankId(e.target.value)}
+                        className="w-full text-xs p-2.5 bg-white border border-slate-200 rounded-xl text-slate-900 font-medium focus:ring-2 focus:ring-rose-500 focus:outline-none"
+                      >
+                        <option value="">Do Not Assign Blood Bank</option>
+                        {allBloodBanks.map((b) => {
+                          const groupKey = (patientBloodGroup || 'O+') as any;
+                          const availableUnits = (b.inventory as Record<string, number>)?.[groupKey] ?? 0;
+                          return (
+                            <option key={b.uid} value={b.uid}>
+                              {b.bankName} — Group {groupKey}: {availableUnits} units in stock • Patient needs {patientBloodUnits || 1}
+                            </option>
+                          );
+                        })}
+                      </select>
+                      {allBloodBanks.length === 0 && (
+                        <p className="text-[11px] text-amber-700 italic">No verified blood banks found. Approve provider verification in Tab 2.</p>
+                      )}
+                    </div>
+
+                    {/* Oxygen Depot Selection */}
+                    <div className="p-3 bg-sky-50/50 rounded-2xl border border-sky-100 space-y-2">
+                      <div className="flex flex-wrap items-center justify-between gap-1.5">
+                        <label className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                          <Wind className="w-4 h-4 text-sky-600" />
+                          <span>Oxygen Supplier Allocation</span>
+                        </label>
+                        <div className="flex items-center gap-1.5 text-[11px]">
+                          <span className="px-2 py-0.5 rounded-full font-bold bg-sky-100 text-sky-800 border border-sky-200">
+                            Patient Needs: {patientOxyCylinders > 0 ? `${patientOxyCylinders} Cylinder${patientOxyCylinders > 1 ? 's' : ''}` : 'Oxygen Support'}
+                          </span>
+                          <span className="px-2 py-0.5 rounded-full font-semibold bg-white text-slate-600 border border-slate-200">
+                            Network Demand: {totalOxyPatientsCount} patient{totalOxyPatientsCount === 1 ? '' : 's'} ({totalOxyDemandCylinders} cylinders)
+                          </span>
+                        </div>
+                      </div>
+                      <select
+                        value={assignOxygenId}
+                        onChange={(e) => setAssignOxygenId(e.target.value)}
+                        className="w-full text-xs p-2.5 bg-white border border-slate-200 rounded-xl text-slate-900 font-medium focus:ring-2 focus:ring-sky-500 focus:outline-none"
+                      >
+                        <option value="">Do Not Assign Oxygen Supplier</option>
+                        {allOxygenDepots.map((o) => (
+                          <option key={o.uid} value={o.uid}>
+                            {o.providerName} — {o.cylindersAvailable} cylinders in stock • Patient needs {patientOxyCylinders || 1}
+                          </option>
+                        ))}
+                      </select>
+                      {allOxygenDepots.length === 0 && (
+                        <p className="text-[11px] text-amber-700 italic">No verified oxygen suppliers found. Approve provider verification in Tab 2.</p>
+                      )}
+                    </div>
+                  </>
+                );
+              })()}
 
               {/* Coordinator Dispatch Instructions */}
               <div>

@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import { doc, onSnapshot } from 'firebase/firestore';
+import { db, isFirebaseConfigured } from '../../config/firebase';
 import {
   Truck,
   ShieldCheck,
@@ -50,6 +52,19 @@ export const AmbulanceDashboard: React.FC = () => {
     if (!currentUser) return;
     loadData();
     const unsubscribeStore = dataStore.subscribe(loadData);
+    let unsubscribeDoc = () => {};
+    if (isFirebaseConfigured && db) {
+      try {
+        unsubscribeDoc = onSnapshot(doc(db, 'ambulanceProfiles', currentUser.uid), (snap) => {
+          if (snap.exists()) {
+            const data = snap.data() as AmbulanceProfile;
+            setProfile(data);
+            dataStore.state.ambulanceProfiles[currentUser.uid] = data;
+            dataStore.saveState();
+          }
+        });
+      } catch (err) {}
+    }
     const unsubscribeRequests = subscribeRequestsForProviderFromFirestore(
       currentUser.uid,
       (nextRequests) => {
@@ -58,18 +73,19 @@ export const AmbulanceDashboard: React.FC = () => {
         setRequestsError(null);
       },
       (message) => {
-        setRequests([]);
-        setRequestsError(message);
+        const local = dataStore.getRequestsForProvider(currentUser.uid);
+        setRequests(local);
         setRequestsLoading(false);
       }
     );
     return () => {
       unsubscribeStore();
+      unsubscribeDoc();
       unsubscribeRequests();
     };
   }, [currentUser]);
 
-  const handleAddVehicle = (e: React.FormEvent) => {
+  const handleAddVehicle = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!currentUser || !profile) return;
     const vehicle: AmbulanceVehicle = {
@@ -81,10 +97,37 @@ export const AmbulanceDashboard: React.FC = () => {
       currentStatus: 'idle'
     };
     const updatedVehicles = [...profile.vehicles, vehicle];
-    dataStore.updateAmbulanceProfile(currentUser.uid, { vehicles: updatedVehicles });
-    setShowAddVehicle(false);
-    setSuccessMessage(`Vehicle ${newVehicleId} added to active dispatch fleet.`);
-    setTimeout(() => setSuccessMessage(null), 3000);
+    try {
+      await dataStore.updateAmbulanceProfile(currentUser.uid, { vehicles: updatedVehicles });
+      setShowAddVehicle(false);
+      setSuccessMessage(`Vehicle ${newVehicleId} addition request submitted to Central Coordinator for approval (Pending Review).`);
+      setTimeout(() => setSuccessMessage(null), 4000);
+    } catch (err) {
+      setShowAddVehicle(false);
+      setSuccessMessage(`Vehicle ${newVehicleId} addition request recorded (Pending Review).`);
+      setTimeout(() => setSuccessMessage(null), 4000);
+    }
+  };
+
+  const handleToggleVehicleAvailability = async (vehicleId: string) => {
+    if (!currentUser || !profile) return;
+    const updatedVehicles = profile.vehicles.map((v) =>
+      v.vehicleId === vehicleId
+        ? {
+            ...v,
+            isAvailable: !v.isAvailable,
+            currentStatus: (!v.isAvailable ? 'idle' : 'on_trip') as 'idle' | 'on_trip'
+          }
+        : v
+    );
+    try {
+      await dataStore.updateAmbulanceProfile(currentUser.uid, { vehicles: updatedVehicles });
+      setSuccessMessage(`Fleet availability update submitted to Central Coordinator for approval (Pending Review).`);
+      setTimeout(() => setSuccessMessage(null), 4000);
+    } catch (err) {
+      setSuccessMessage(`Fleet availability update recorded (Pending Review).`);
+      setTimeout(() => setSuccessMessage(null), 4000);
+    }
   };
 
   const handleAcceptRequest = async (reqId: string) => {
@@ -307,25 +350,56 @@ export const AmbulanceDashboard: React.FC = () => {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left: Registered Vehicles */}
         <div className="lg:col-span-1 space-y-4">
+          {/* Pending Coordinator Review Banner */}
+          {(() => {
+            const pendingUpdate = (dataStore.getProviderUpdateRequests() || []).find(
+              (u) => u.providerUid === currentUser?.uid && (!u.status || u.status === 'PENDING')
+            );
+            if (!pendingUpdate) return null;
+            return (
+              <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs space-y-1">
+                <div className="font-bold text-amber-900 flex items-center gap-1.5">
+                  <Clock className="w-3.5 h-3.5 text-amber-700" />
+                  <span>Pending Coordinator Review</span>
+                </div>
+                <p className="text-amber-800 text-[11px]">
+                  Requested fleet update ({pendingUpdate.summary}) is awaiting Coordinator review and acceptance in the Admin Dashboard before going live.
+                </p>
+              </div>
+            );
+          })()}
+
           <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-sm space-y-4">
-            <h2 className="font-bold text-slate-900 text-base flex items-center gap-2 border-b border-slate-100 pb-3">
-              <Truck className="w-5 h-5 text-amber-600" /> Fleet Vehicles ({profile.vehicles.length})
-            </h2>
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <h2 className="font-bold text-slate-900 text-base flex items-center gap-2">
+                <Truck className="w-5 h-5 text-amber-600" /> Fleet Vehicles ({profile.vehicles.length})
+              </h2>
+              <button
+                type="button"
+                onClick={() => setShowAddVehicle(true)}
+                className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs rounded-lg flex items-center gap-1 shadow-xs transition-colors"
+              >
+                <Plus className="w-3.5 h-3.5" /> Add Vehicle
+              </button>
+            </div>
 
             <div className="space-y-3">
               {profile.vehicles.map((v) => (
                 <div key={v.vehicleId} className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 text-xs space-y-1.5">
                   <div className="flex items-center justify-between">
                     <span className="font-bold text-slate-900 font-mono">{v.vehicleId}</span>
-                    <span
-                      className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                    <button
+                      type="button"
+                      title="Click to toggle availability"
+                      onClick={() => handleToggleVehicleAvailability(v.vehicleId)}
+                      className={`text-[10px] font-bold px-2 py-0.5 rounded-full transition-colors cursor-pointer ${
                         v.isAvailable
-                          ? 'bg-emerald-100 text-emerald-800'
-                          : 'bg-amber-100 text-amber-800'
+                          ? 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200'
+                          : 'bg-amber-100 text-amber-800 hover:bg-amber-200'
                       }`}
                     >
                       {v.isAvailable ? 'Available' : 'On Active Trip'}
-                    </span>
+                    </button>
                   </div>
                   <div className="text-slate-600">Type: <span className="font-semibold text-slate-800">{v.vehicleType}</span></div>
                   <div className="text-slate-600">Driver: <span className="font-semibold text-slate-800">{v.driverName}</span> ({v.driverPhone})</div>

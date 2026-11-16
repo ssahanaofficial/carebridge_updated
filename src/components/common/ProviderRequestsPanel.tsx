@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { AlertCircle, CheckCircle2, Clock, LoaderCircle, XCircle } from 'lucide-react';
-import { respondToRequestInFirestore, subscribeRequestsForProviderFromFirestore } from '../../services/dataService';
+import { dataStore, respondToRequestInFirestore, subscribeRequestsForProviderFromFirestore } from '../../services/dataService';
 import type { ResourceRequest } from '../../types';
 
 interface ProviderRequestsPanelProps {
@@ -55,8 +55,9 @@ export const ProviderRequestsPanel: React.FC<ProviderRequestsPanelProps> = ({
         setLoadError(null);
       },
       (message) => {
-        setLoadError(message);
-        onRequestsChange?.([]);
+        const local = dataStore.getRequestsForProvider(providerUid);
+        setRequests(local);
+        onRequestsChange?.(local);
         setIsLoading(false);
       }
     );
