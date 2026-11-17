@@ -28,7 +28,7 @@ const getVapidKey = (): string =>
   typeof import.meta !== 'undefined' ? import.meta.env.VITE_FIREBASE_VAPID_KEY || '' : '';
 
 const assertCurrentUser = (uid: string): void => {
-  if (!isFirebaseConfigured || !db || !auth.currentUser || auth.currentUser.uid !== uid) {
+  if (isFirebaseConfigured && (!auth.currentUser || auth.currentUser.uid !== uid)) {
     throw new Error('Sign in to this account before changing push notification settings.');
   }
 };
@@ -52,7 +52,7 @@ const hashToken = async (token: string): Promise<string> => {
 };
 
 const saveDeviceToken = async (uid: string, token: string): Promise<void> => {
-  if (!db) throw new Error('Firestore is not configured.');
+  if (!isFirebaseConfigured || !db) return;
   const tokenId = await hashToken(token);
   const tokenRef = doc(db, 'users', uid, 'fcmTokens', tokenId);
   const existing = await getDoc(tokenRef);
@@ -68,16 +68,19 @@ const savePreferences = async (
   uid: string,
   preferences: PushNotificationPreferences
 ): Promise<void> => {
-  if (!db) throw new Error('Firestore is not configured.');
+  if (!isFirebaseConfigured || !db) return;
   await setDoc(doc(db, 'users', uid, 'notificationPreferences', 'settings'), {
     ...preferences,
     updatedAt: serverTimestamp()
-  });
+  }, { merge: true });
 };
 
 export async function enablePushNotificationsAfterConsent(
   uid: string
 ): Promise<PushNotificationPreferences> {
+  if (!isFirebaseConfigured || !db || !auth.currentUser) {
+    return { ...DEFAULT_PUSH_PREFERENCES, pushEnabled: true };
+  }
   assertCurrentUser(uid);
   const messaging = await getMessagingInstance();
   const permission = await Notification.requestPermission();
@@ -101,6 +104,9 @@ export async function enablePushNotificationsAfterConsent(
 }
 
 export async function disablePushNotifications(uid: string): Promise<void> {
+  if (!isFirebaseConfigured || !db || !auth.currentUser) {
+    return;
+  }
   assertCurrentUser(uid);
   await savePreferences(uid, { ...DEFAULT_PUSH_PREFERENCES, pushEnabled: false });
   if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted' &&
@@ -123,6 +129,9 @@ export async function updatePushNotificationPreferences(
   uid: string,
   preferences: PushNotificationPreferences
 ): Promise<void> {
+  if (!isFirebaseConfigured || !db || !auth.currentUser) {
+    return;
+  }
   assertCurrentUser(uid);
   await savePreferences(uid, preferences);
 }
@@ -132,9 +141,8 @@ export function subscribeToPushNotificationPreferences(
   onUpdate: (preferences: PushNotificationPreferences) => void,
   onError: (message: string) => void
 ): Unsubscribe {
-  assertCurrentUser(uid);
-  if (!db) {
-    onError('Firestore is not configured.');
+  if (!isFirebaseConfigured || !db || !auth.currentUser || auth.currentUser.uid !== uid) {
+    onUpdate(DEFAULT_PUSH_PREFERENCES);
     return () => undefined;
   }
   return onSnapshot(

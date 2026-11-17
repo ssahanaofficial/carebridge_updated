@@ -223,7 +223,7 @@ export interface EmergencyCase {
   attendantPhone?: string;
   providerName?: string;
   resourcesList?: string[];
-  individualStatuses?: Array<{ resource: string; detail: string; status: string }>;
+  individualStatuses?: Array<{ resource: string; detail: string; status: string; code?: string; updatedAt?: string }>;
   dateStr?: string;
   createdTimestamp?: number;
   updatedTimestamp?: number;

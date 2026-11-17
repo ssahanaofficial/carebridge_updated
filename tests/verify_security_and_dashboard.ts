@@ -1357,6 +1357,206 @@ async function runTests() {
   }
 
   // ----------------------------------------------------
+  // TEST 30: Provider Assignment, Dashboard Delivery, and Working Accept/Reject Lifecycle
+  // ----------------------------------------------------
+  try {
+    // 1. Create a fresh test case
+    const testCaseId = 'EMG-20261111-9999';
+    const testCase: EmergencyCase = {
+      caseId: testCaseId,
+      patientId: 'patient-lifecycle-01',
+      patientUid: 'patient-lifecycle-01',
+      patientName: 'Sunil Kumar',
+      patientAge: 45,
+      patientGender: 'Male',
+      patientBloodGroup: 'O+',
+      patientPhone: '+91 99887 76655',
+      patientCondition: 'Polytrauma following road traffic collision',
+      emergencyDescription: 'Multiple fractures, hypovolemia, requires immediate ICU, blood and ambulance dispatch',
+      emergencyCategory: 'Accident',
+      emergencyPriority: 'Critical',
+      triagePriority: 'Red',
+      incidentAddress: 'Silk Board Junction, Hosur Road, Bengaluru',
+      incidentCoordinates: { lat: 12.9177, lng: 77.6238 },
+      requesterUid: 'patient-lifecycle-01',
+      requesterRole: 'patient',
+      createdBy: 'patient',
+      contactPerson: 'Sunil Kumar',
+      contactPhone: '+91 99887 76655',
+      status: 'Submitted',
+      requiredServices: ['Hospital admission', 'Ambulance', 'Blood unit supply'],
+      quotas: {
+        hospitalBedsRequired: 1,
+        icuRequired: true,
+        bloodRequired: true,
+        bloodUnitsRequested: 2,
+        bloodGroup: 'O+',
+        oxygenRequired: false,
+        ambulanceRequired: true,
+        ambulanceType: 'ALS'
+      },
+      serviceStatuses: {
+        hospital: 'Submitted',
+        ambulance: 'Submitted',
+        blood: 'Submitted',
+        oxygen: 'Not Requested',
+        doctor: 'Not Requested'
+      },
+      createdAt: '12:00 PM',
+      dateStr: 'Today, 11 Nov 2026',
+      createdTimestamp: Date.now(),
+      updatedTimestamp: Date.now()
+    };
+    dataStore.createCase(testCase);
+
+    // 2. Admin assigns providers
+    const hospitalUid = 'hosp-001'; // Victoria Hospital
+    const ambulanceUid = 'amb-001'; // QuickRescue
+    const bloodUid = 'blood-001'; // Red Cross
+
+    await dataStore.assignCaseProviders(testCaseId, {
+      hospitalUid,
+      ambulanceUid,
+      bloodBankUid: bloodUid
+    });
+
+    // Verify requests were created for each provider and delivered with status 'ASSIGNED'
+    const hospRequests = dataStore.getRequestsForProvider(hospitalUid).filter(r => r.caseId === testCaseId);
+    const ambRequests = dataStore.getRequestsForProvider(ambulanceUid).filter(r => r.caseId === testCaseId);
+    const bloodRequests = dataStore.getRequestsForProvider(bloodUid).filter(r => r.caseId === testCaseId);
+
+    const requestsCreated = hospRequests.length > 0 && ambRequests.length > 0 && bloodRequests.length > 0;
+    const initialStatusAssigned = hospRequests[0]?.status === 'ASSIGNED' &&
+      ambRequests[0]?.status === 'ASSIGNED' &&
+      bloodRequests[0]?.status === 'ASSIGNED';
+
+    // 3. Hospital Accepts
+    const initialIcuBeds = dataStore.getHospitalProfile(hospitalUid)?.availableICU || 0;
+    const hospReqId = hospRequests[0].requestId;
+    dataStore.respondToRequest(hospReqId, 'accepted');
+    const hospReqAfter = dataStore.getRequestsForProvider(hospitalUid).find(r => r.requestId === hospReqId);
+    const hospAccepted = hospReqAfter?.status === 'accepted';
+    const bedUpdated = (dataStore.getHospitalProfile(hospitalUid)?.availableICU || 0) === initialIcuBeds - 1;
+
+    // 4. Ambulance Accepts & creates trip
+    const ambReqId = ambRequests[0].requestId;
+    dataStore.respondToRequest(ambReqId, 'accepted');
+    const ambReqAfter = dataStore.getRequestsForProvider(ambulanceUid).find(r => r.requestId === ambReqId);
+    const ambAccepted = ambReqAfter?.status === 'accepted';
+    const tripCreated = dataStore.getTrips().some(t => t.caseId === testCaseId);
+
+    // 5. Blood Bank Rejects with reason
+    const bloodReqId = bloodRequests[0].requestId;
+    const declineReason = 'O+ blood units currently quarantined for cross-matching';
+    dataStore.respondToRequest(bloodReqId, 'rejected', declineReason);
+    const bloodReqAfter = dataStore.getRequestsForProvider(bloodUid).find(r => r.requestId === bloodReqId);
+    const bloodRejected = bloodReqAfter?.status === 'rejected' && bloodReqAfter?.rejectionReason === declineReason;
+
+    // 6. Verify parent emergency case tracking and service statuses
+    const updatedCase = dataStore.getCase(testCaseId);
+    const hospServiceConfirmed = updatedCase?.serviceStatuses?.hospital === 'Confirmed';
+    const ambServiceDispatched = updatedCase?.serviceStatuses?.ambulance === 'Dispatched';
+    const bloodServiceDeclined = updatedCase?.serviceStatuses?.blood === 'Declined';
+    const caseRejectionNoted = updatedCase?.rejectionReason === declineReason;
+    const auditRecorded = updatedCase?.auditHistory?.some(a => (a.note || '').toLowerCase().includes('declined'));
+
+    // 7. Verify Notifications sent to patient and/or coordinator
+    const patientNotifs = dataStore.getNotifications('patient-lifecycle-01');
+    const patientNotified = patientNotifs.some(n =>
+      n.type === 'request_rejected' && (n.message || '').includes(declineReason)
+    );
+
+    if (
+      requestsCreated &&
+      initialStatusAssigned &&
+      hospAccepted &&
+      bedUpdated &&
+      ambAccepted &&
+      tripCreated &&
+      bloodRejected &&
+      hospServiceConfirmed &&
+      ambServiceDispatched &&
+      bloodServiceDeclined &&
+      caseRejectionNoted &&
+      auditRecorded &&
+      patientNotified
+    ) {
+      record('TEST-30', 'Provider Assignment, Dashboard Delivery & Working Accept/Reject Lifecycle', 'PASS',
+        `Admin assigned providers; respective hospital, ambulance, and blood bank received requests. Accept decremented hospital ICU beds and initiated ambulance trip; Reject preserved rejection reason "${declineReason}", updated parent case serviceStatuses, appended audit history, and notified patient & coordinator in real-time.`);
+    } else {
+      record('TEST-30', 'Provider Assignment, Dashboard Delivery & Working Accept/Reject Lifecycle', 'FAIL',
+        `Verification checks failed: requestsCreated=${requestsCreated}, initialStatusAssigned=${initialStatusAssigned}, hospAccepted=${hospAccepted}, bedUpdated=${bedUpdated}, ambAccepted=${ambAccepted}, tripCreated=${tripCreated}, bloodRejected=${bloodRejected}, hospServiceConfirmed=${hospServiceConfirmed}, ambServiceDispatched=${ambServiceDispatched}, bloodServiceDeclined=${bloodServiceDeclined}, caseRejectionNoted=${caseRejectionNoted}, auditRecorded=${auditRecorded}, patientNotified=${patientNotified}`);
+    }
+  } catch (err: any) {
+    record('TEST-30', 'Provider Assignment, Dashboard Delivery & Working Accept/Reject Lifecycle', 'FAIL', err.message);
+  }
+
+  // ----------------------------------------------------
+  // TEST 31: Ambulance Status Updates Propagate to Patient Dashboard
+  // ----------------------------------------------------
+  try {
+    const testCaseId = 'EMG-20261111-9999';
+    const testTrip = dataStore.getTrips().find(t => t.caseId === testCaseId);
+
+    if (!testTrip) {
+      throw new Error(`No trip found for case ${testCaseId} from TEST-30`);
+    }
+
+    // 1. Advance to 'en_route'
+    dataStore.updateTripStatus(testTrip.tripId, 'en_route', 'Navigating priority traffic corridor');
+    let c = dataStore.getCase(testCaseId);
+    const enRouteOk = c?.serviceStatuses?.ambulance === 'En Route' &&
+      c?.individualStatuses?.some(s => s.resource?.toLowerCase().includes('ambulance') && s.status === 'En Route');
+
+    // 2. Advance to 'arrived'
+    dataStore.updateTripStatus(testTrip.tripId, 'arrived', 'At patient location');
+    c = dataStore.getCase(testCaseId);
+    const arrivedOk = c?.serviceStatuses?.ambulance === 'Arrived at Scene' &&
+      c?.individualStatuses?.some(s => s.resource?.toLowerCase().includes('ambulance') && s.status === 'Arrived at Scene');
+
+    // 3. Advance to 'picked_up'
+    dataStore.updateTripStatus(testTrip.tripId, 'picked_up', 'Patient safely onboard');
+    c = dataStore.getCase(testCaseId);
+    const pickedUpOk = c?.serviceStatuses?.ambulance === 'Patient Picked Up' &&
+      c?.individualStatuses?.some(s => s.resource?.toLowerCase().includes('ambulance') && s.status === 'Patient Picked Up');
+
+    // 4. Advance to 'in_transit'
+    dataStore.updateTripStatus(testTrip.tripId, 'in_transit', 'En route to emergency ward');
+    c = dataStore.getCase(testCaseId);
+    const inTransitOk = c?.serviceStatuses?.ambulance === 'In Transit to Hospital' &&
+      c?.individualStatuses?.some(s => s.resource?.toLowerCase().includes('ambulance') && s.status === 'In Transit');
+
+    // 5. Advance to 'delivered'
+    dataStore.updateTripStatus(testTrip.tripId, 'delivered', 'Patient handed over to triage nurses');
+    c = dataStore.getCase(testCaseId);
+    const deliveredOk = c?.serviceStatuses?.ambulance === 'Delivered to Hospital' &&
+      c?.individualStatuses?.some(s => s.resource?.toLowerCase().includes('ambulance') && s.status === 'Delivered');
+
+    // 6. Advance to 'completed'
+    dataStore.updateTripStatus(testTrip.tripId, 'completed', 'Mission wrapped');
+    c = dataStore.getCase(testCaseId);
+    const completedOk = c?.serviceStatuses?.ambulance === 'Trip Completed' &&
+      c?.status === 'COMPLETED' &&
+      c?.individualStatuses?.some(s => s.resource?.toLowerCase().includes('ambulance') && s.status === 'Completed');
+
+    // 7. Verify patient notification received
+    const patientNotifs = dataStore.getNotifications('patient-lifecycle-01');
+    const hasStatusNotif = patientNotifs.some(n =>
+      n.type === 'trip_status' || (n.message && n.message.toLowerCase().includes('ambulance'))
+    );
+
+    if (enRouteOk && arrivedOk && pickedUpOk && inTransitOk && deliveredOk && completedOk && hasStatusNotif) {
+      record('TEST-31', 'Ambulance Status Updates Propagate to Patient Dashboard', 'PASS',
+        'Ambulance trip progression across all 7 statuses (dispatched -> en_route -> arrived -> picked_up -> in_transit -> delivered -> completed) successfully updated parent case status, serviceStatuses.ambulance, individualStatuses, and patient notifications in real-time.');
+    } else {
+      record('TEST-31', 'Ambulance Status Updates Propagate to Patient Dashboard', 'FAIL',
+        `Progression verification failed: enRouteOk=${enRouteOk}, arrivedOk=${arrivedOk}, pickedUpOk=${pickedUpOk}, inTransitOk=${inTransitOk}, deliveredOk=${deliveredOk}, completedOk=${completedOk}, hasStatusNotif=${hasStatusNotif}`);
+    }
+  } catch (err: any) {
+    record('TEST-31', 'Ambulance Status Updates Propagate to Patient Dashboard', 'FAIL', err.message);
+  }
+
+  // ----------------------------------------------------
   // SUMMARY
   // ----------------------------------------------------
   console.log('\n====================================================');

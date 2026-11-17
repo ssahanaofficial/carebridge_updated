@@ -215,79 +215,114 @@ export const AdminDashboard: React.FC = () => {
     };
   }, [currentUser?.uid, currentUser?.role, coordinatorRefresh]);
 
-  // Helper to verify a genuine healthcare facility institution (not an individual user login or test account)
-  const isAuthenticFacility = (name?: string, uid?: string) => {
-    if (!name || name.trim().length < 3) return false;
-    const lower = name.toLowerCase().trim();
-
-    // Default canonical verified system facilities
-    const defaultUids = ['blood-demo-01', 'hosp-demo-01', 'oxy-demo-01', 'prov-oxygen-01', 'amb-demo-01'];
-    if (uid && defaultUids.includes(uid)) return true;
-
-    // Explicitly reject known personal usernames / test handles
-    const blacklistedNames = [
-      'sqq', 'sq', 'vasuki', 'bbb', 'shweta', 'priya', 'sahana', 'ooo', 'rrr',
-      'surabhi kulk', 'surabhi kulkarni', 'admin', 'coordinator', 'test', 'demo',
-      'user', 'patient', 'doctor'
-    ];
-    if (blacklistedNames.includes(lower)) return false;
-
-    // Genuine facilities MUST have institutional/healthcare keywords in their name
-    const facilityKeywords = [
-      'hospital', 'centre', 'center', 'bank', 'blood', 'oxygen', 'ambulance',
-      'medical', 'health', 'care', 'clinic', 'depot', 'gas', 'distributor',
-      'trust', 'foundation', 'red cross', 'kims', 'sdm', 'rotary', 'emergency'
-    ];
-    return facilityKeywords.some((kw) => lower.includes(kw));
-  };
-
+  // Consolidate all verified & registered healthcare facility providers for dispatch and telemetry
   const allHospitals = useMemo(() => {
     const map = new Map<string, HospitalProfile>();
-    map.set(INITIAL_HOSPITAL.hospitalName.toLowerCase().trim(), INITIAL_HOSPITAL);
-    hospitals
-      .filter((h) => isAuthenticFacility(h.hospitalName, h.uid))
-      .forEach((h) => {
-        const key = h.hospitalName.toLowerCase().trim();
-        if (!map.has(key)) map.set(key, h);
+    if (INITIAL_HOSPITAL) {
+      map.set(INITIAL_HOSPITAL.uid, INITIAL_HOSPITAL);
+    }
+    hospitals.forEach((h) => {
+      if (h && h.uid) map.set(h.uid, h);
+    });
+    users
+      .filter((u) => u.role === 'hospital')
+      .forEach((u) => {
+        const existing = map.get(u.uid);
+        if (existing) {
+          if (u.displayName && (existing.hospitalName === INITIAL_HOSPITAL.hospitalName || !existing.hospitalName)) {
+            existing.hospitalName = u.displayName;
+          }
+        } else {
+          const prof = dataStore.getHospitalProfile(u.uid);
+          if (prof) {
+            if (u.displayName) prof.hospitalName = u.displayName;
+            map.set(prof.uid, prof);
+          }
+        }
       });
     return Array.from(map.values());
-  }, [hospitals]);
+  }, [hospitals, users]);
 
   const allBloodBanks = useMemo(() => {
     const map = new Map<string, BloodBankProfile>();
-    map.set(INITIAL_BLOOD_BANK.bankName.toLowerCase().trim(), INITIAL_BLOOD_BANK);
-    bloodBanks
-      .filter((b) => isAuthenticFacility(b.bankName, b.uid))
-      .forEach((b) => {
-        const key = b.bankName.toLowerCase().trim();
-        if (!map.has(key)) map.set(key, b);
+    if (INITIAL_BLOOD_BANK) {
+      map.set(INITIAL_BLOOD_BANK.uid, INITIAL_BLOOD_BANK);
+    }
+    bloodBanks.forEach((b) => {
+      if (b && b.uid) map.set(b.uid, b);
+    });
+    users
+      .filter((u) => u.role === 'bloodBank')
+      .forEach((u) => {
+        const existing = map.get(u.uid);
+        if (existing) {
+          if (u.displayName && (existing.bankName === INITIAL_BLOOD_BANK.bankName || !existing.bankName)) {
+            existing.bankName = u.displayName;
+          }
+        } else {
+          const prof = dataStore.getBloodBankProfile(u.uid);
+          if (prof) {
+            if (u.displayName) prof.bankName = u.displayName;
+            map.set(prof.uid, prof);
+          }
+        }
       });
     return Array.from(map.values());
-  }, [bloodBanks]);
+  }, [bloodBanks, users]);
 
   const allOxygenDepots = useMemo(() => {
     const map = new Map<string, OxygenProfile>();
-    map.set(INITIAL_OXYGEN.providerName.toLowerCase().trim(), INITIAL_OXYGEN);
-    oxygenDepots
-      .filter((o) => isAuthenticFacility(o.providerName, o.uid))
-      .forEach((o) => {
-        const key = o.providerName.toLowerCase().trim();
-        if (!map.has(key)) map.set(key, o);
+    if (INITIAL_OXYGEN) {
+      map.set(INITIAL_OXYGEN.uid, INITIAL_OXYGEN);
+    }
+    oxygenDepots.forEach((o) => {
+      if (o && o.uid) map.set(o.uid, o);
+    });
+    users
+      .filter((u) => u.role === 'oxygenProvider' || (u.role as any) === 'oxygenDepot')
+      .forEach((u) => {
+        const existing = map.get(u.uid);
+        if (existing) {
+          if (u.displayName && (existing.providerName === INITIAL_OXYGEN.providerName || !existing.providerName)) {
+            existing.providerName = u.displayName;
+          }
+        } else {
+          const prof = dataStore.getOxygenProfile(u.uid);
+          if (prof) {
+            if (u.displayName) prof.providerName = u.displayName;
+            map.set(prof.uid, prof);
+          }
+        }
       });
     return Array.from(map.values());
-  }, [oxygenDepots]);
+  }, [oxygenDepots, users]);
 
   const allAmbulances = useMemo(() => {
     const map = new Map<string, AmbulanceProfile>();
-    map.set(INITIAL_AMBULANCE.providerName.toLowerCase().trim(), INITIAL_AMBULANCE);
-    ambulances
-      .filter((a) => isAuthenticFacility(a.providerName, a.uid))
-      .forEach((a) => {
-        const key = a.providerName.toLowerCase().trim();
-        if (!map.has(key)) map.set(key, a);
+    if (INITIAL_AMBULANCE) {
+      map.set(INITIAL_AMBULANCE.uid, INITIAL_AMBULANCE);
+    }
+    ambulances.forEach((a) => {
+      if (a && a.uid) map.set(a.uid, a);
+    });
+    users
+      .filter((u) => u.role === 'ambulanceProvider')
+      .forEach((u) => {
+        const existing = map.get(u.uid);
+        if (existing) {
+          if (u.displayName && (existing.providerName === INITIAL_AMBULANCE.providerName || !existing.providerName)) {
+            existing.providerName = u.displayName;
+          }
+        } else {
+          const prof = dataStore.getAmbulanceProfile(u.uid);
+          if (prof) {
+            if (u.displayName) prof.providerName = u.displayName;
+            map.set(prof.uid, prof);
+          }
+        }
       });
     return Array.from(map.values());
-  }, [ambulances]);
+  }, [ambulances, users]);
 
   const handleVerify = async (uid: string, verify: boolean) => {
     setSuccessMessage(null);
@@ -847,7 +882,19 @@ export const AdminDashboard: React.FC = () => {
                                 <div key={request.requestId} className="px-3 py-2 grid sm:grid-cols-5 gap-2 text-[11px] items-center">
                                   <div><span className="text-slate-400">Provider: </span><span className="font-semibold text-slate-700">{request.providerName || request.providerUid || 'Unassigned'}</span></div>
                                   <div><span className="text-slate-400">Type: </span><span className="text-slate-700 capitalize">{request.resourceType}</span></div>
-                                  <div><span className="text-slate-400">Status: </span><span className="text-slate-700 capitalize">{request.status}</span></div>
+                                  <div><span className="text-slate-400">Status: </span>
+                                    {String(request.status).toLowerCase() === 'accepted' ? (
+                                      <span className="font-bold text-emerald-700">Accepted</span>
+                                    ) : String(request.status).toLowerCase() === 'rejected' ? (
+                                      <span className="font-bold text-red-700" title={request.rejectionReason}>
+                                        Declined {request.rejectionReason ? `(${request.rejectionReason})` : ''}
+                                      </span>
+                                    ) : String(request.status).toLowerCase() === 'assigned' ? (
+                                      <span className="font-semibold text-amber-800">Assigned (Awaiting Response)</span>
+                                    ) : (
+                                      <span className="text-slate-700 capitalize">{request.status}</span>
+                                    )}
+                                  </div>
                                   <div><span className="text-slate-400">Updated: </span><span className="text-slate-700">{request.updatedAt ? formatDate(request.updatedAt) : 'Not recorded'}</span></div>
                                   {currentUser?.role === 'admin' && (
                                     <button
@@ -1042,38 +1089,80 @@ export const AdminDashboard: React.FC = () => {
                       <span className="font-semibold text-slate-800">Complaint:</span> {c.conditionSummary}
                     </div>
 
-                    {/* Assigned Providers Summary */}
+                    {/* Assigned Providers Summary & Live Response Status */}
                     {(() => {
                       const caseReqs = (coordinatorRequests.length > 0 ? coordinatorRequests : requests).filter((r) => r.caseId === c.caseId);
-                      const hospReq = caseReqs.find((r) => ['bed', 'icu', 'hospital_admission'].includes(r.resourceType) && ['ASSIGNED', 'ACCEPTED'].includes(String(r.status)));
-                      const ambReq = caseReqs.find((r) => r.resourceType === 'ambulance' && ['ASSIGNED', 'ACCEPTED'].includes(String(r.status)));
-                      const bloodReq = caseReqs.find((r) => r.resourceType === 'blood' && ['ASSIGNED', 'ACCEPTED'].includes(String(r.status)));
-                      const oxyReq = caseReqs.find((r) => r.resourceType === 'oxygen' && ['ASSIGNED', 'ACCEPTED'].includes(String(r.status)));
+                      const hospReq = caseReqs.find((r) => ['bed', 'icu', 'hospital_admission'].includes(r.resourceType));
+                      const ambReq = caseReqs.find((r) => r.resourceType === 'ambulance');
+                      const bloodReq = caseReqs.find((r) => r.resourceType === 'blood');
+                      const oxyReq = caseReqs.find((r) => r.resourceType === 'oxygen');
 
                       const hospName = c.assignedHospitalName || hospReq?.providerName;
                       const ambName = c.assignedAmbulanceName || ambReq?.providerName;
                       const bloodName = c.assignedBloodBankName || bloodReq?.providerName;
                       const oxyName = c.assignedOxygenName || oxyReq?.providerName;
 
+                      const getProviderStatusBadge = (name?: string, req?: ResourceRequest) => {
+                        if (!name && !req?.providerUid) {
+                          return <span className="bg-slate-100 text-slate-400 px-2 py-0.5 rounded font-medium">Not Assigned</span>;
+                        }
+                        const statusStr = String(req?.status || (c.status === 'ASSIGNED' ? 'ASSIGNED' : '')).toLowerCase();
+                        if (statusStr === 'accepted') {
+                          return (
+                            <span className="bg-emerald-50 text-emerald-800 border border-emerald-200 px-2 py-0.5 rounded font-semibold inline-flex items-center gap-1">
+                              <CheckCircle2 className="w-3 h-3 text-emerald-600" /> {name || req?.providerName} (Accepted)
+                            </span>
+                          );
+                        }
+                        if (statusStr === 'rejected') {
+                          return (
+                            <span className="bg-red-50 text-red-800 border border-red-200 px-2 py-0.5 rounded font-bold inline-flex items-center gap-1" title={req?.rejectionReason}>
+                              <XCircle className="w-3 h-3 text-red-600" /> {name || req?.providerName} (Declined{req?.rejectionReason ? `: ${req.rejectionReason}` : ''})
+                            </span>
+                          );
+                        }
+                        return (
+                          <span className="bg-amber-50 text-amber-900 border border-amber-200 px-2 py-0.5 rounded font-medium inline-flex items-center gap-1">
+                            <Clock className="w-3 h-3 text-amber-600" /> {name || req?.providerName} (Awaiting Response)
+                          </span>
+                        );
+                      };
+
+                      const hasAnyRejection = [hospReq, ambReq, bloodReq, oxyReq].some(
+                        (r) => r && String(r.status).toLowerCase() === 'rejected'
+                      );
+
                       return (
-                        <div className="flex flex-wrap items-center gap-2 pt-1 text-[11px]">
-                          <span className="text-slate-400 font-semibold uppercase text-[10px]">Assigned:</span>
-                          <span className={`px-2 py-0.5 rounded font-medium ${hospName ? 'bg-blue-50 text-blue-800 border border-blue-200' : 'bg-slate-100 text-slate-400'}`}>
-                            Hosp: {hospName || 'Not Assigned'}
-                          </span>
-                          <span className={`px-2 py-0.5 rounded font-medium ${ambName ? 'bg-amber-50 text-amber-800 border border-amber-200' : 'bg-slate-100 text-slate-400'}`}>
-                            Amb: {ambName || 'Not Assigned'}
-                          </span>
-                          {(c.resourcesNeeded || []).some((r) => r.toLowerCase().includes('blood')) && (
-                            <span className={`px-2 py-0.5 rounded font-medium ${bloodName ? 'bg-rose-50 text-rose-800 border border-rose-200' : 'bg-rose-50 text-rose-600 border border-rose-200 font-semibold'}`}>
-                              Blood: {bloodName || 'Not Assigned'}
-                            </span>
+                        <div className="space-y-1.5 pt-1">
+                          {hasAnyRejection && (
+                            <div className="flex items-center gap-1.5 text-xs font-bold text-red-700 bg-red-50 border border-red-200 px-2.5 py-1 rounded-lg">
+                              <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-red-600" />
+                              <span>Provider declined request — immediate coordinator reassignment required!</span>
+                            </div>
                           )}
-                          {(c.resourcesNeeded || []).some((r) => r.toLowerCase().includes('oxygen')) && (
-                            <span className={`px-2 py-0.5 rounded font-medium ${oxyName ? 'bg-sky-50 text-sky-800 border border-sky-200' : 'bg-sky-50 text-sky-600 border border-sky-200 font-semibold'}`}>
-                              Oxygen: {oxyName || 'Not Assigned'}
-                            </span>
-                          )}
+                          <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                            <span className="text-slate-400 font-semibold uppercase text-[10px]">Providers:</span>
+                            <div className="flex items-center gap-1">
+                              <span className="text-slate-500 font-semibold">Hosp:</span>
+                              {getProviderStatusBadge(hospName, hospReq)}
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <span className="text-slate-500 font-semibold">Amb:</span>
+                              {getProviderStatusBadge(ambName, ambReq)}
+                            </div>
+                            {(c.resourcesNeeded || []).some((r) => r.toLowerCase().includes('blood')) && (
+                              <div className="flex items-center gap-1">
+                                <span className="text-slate-500 font-semibold">Blood:</span>
+                                {getProviderStatusBadge(bloodName, bloodReq)}
+                              </div>
+                            )}
+                            {(c.resourcesNeeded || []).some((r) => r.toLowerCase().includes('oxygen')) && (
+                              <div className="flex items-center gap-1">
+                                <span className="text-slate-500 font-semibold">Oxy:</span>
+                                {getProviderStatusBadge(oxyName, oxyReq)}
+                              </div>
+                            )}
+                          </div>
                         </div>
                       );
                     })()}

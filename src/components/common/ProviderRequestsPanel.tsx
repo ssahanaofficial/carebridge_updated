@@ -9,8 +9,21 @@ interface ProviderRequestsPanelProps {
   onRequestsChange?: (requests: ResourceRequest[]) => void;
 }
 
-const isActionRequired = (status: string) =>
-  ['pending', 'assigned'].includes(status.toLowerCase());
+const isAccepted = (status?: string) =>
+  ['accepted', 'completed', 'resolved', 'confirmed', 'allocated', 'dispatched', 'admitted'].includes(
+    String(status || '').trim().toLowerCase()
+  );
+
+const isRejected = (status?: string) =>
+  ['rejected', 'declined', 'cancelled'].includes(
+    String(status || '').trim().toLowerCase()
+  );
+
+const isActionRequired = (status?: string) =>
+  !isAccepted(status) && !isRejected(status);
+
+const isIncomingAssigned = (r: ResourceRequest) =>
+  Boolean(r.assignedAt || r.assignmentCoordinatorUid || String(r.status).toUpperCase() !== 'REQUESTED');
 
 const formatLabel = (key: string) =>
   key.replace(/_/g, ' ').replace(/([A-Z])/g, ' $1').replace(/^./, (letter) => letter.toUpperCase());
@@ -66,8 +79,8 @@ export const ProviderRequestsPanel: React.FC<ProviderRequestsPanelProps> = ({
   const respond = async (request: ResourceRequest, decision: 'accepted' | 'rejected') => {
     setActionError(null);
     setSuccessMessage(null);
-    if (decision === 'rejected' && rejectionReason.trim().length < 5) {
-      setActionError('Enter a rejection reason of at least five characters.');
+    if (decision === 'rejected' && rejectionReason.trim().length < 3) {
+      setActionError('Enter a rejection reason of at least three characters.');
       return;
     }
     setRespondingRequestId(request.requestId);
@@ -129,7 +142,7 @@ export const ProviderRequestsPanel: React.FC<ProviderRequestsPanelProps> = ({
         </div>
       ) : (
         <div className="space-y-3">
-          {requests.filter((r) => String(r.status).toUpperCase() !== 'REQUESTED').map((request) => (
+          {requests.filter(isIncomingAssigned).map((request) => (
             <article key={request.requestId} className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 space-y-3">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="space-y-1">
@@ -140,9 +153,9 @@ export const ProviderRequestsPanel: React.FC<ProviderRequestsPanelProps> = ({
                   </p>
                 </div>
                 <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${
-                  isActionRequired(String(request.status))
+                  isActionRequired(request.status)
                     ? 'bg-amber-100 text-amber-800'
-                    : String(request.status).toLowerCase() === 'accepted'
+                    : isAccepted(request.status)
                       ? 'bg-emerald-100 text-emerald-800'
                       : 'bg-red-100 text-red-800'
                 }`}>
@@ -175,7 +188,7 @@ export const ProviderRequestsPanel: React.FC<ProviderRequestsPanelProps> = ({
                 </div>
               )}
 
-              {isActionRequired(String(request.status)) && (
+              {isActionRequired(request.status) && (
                 <div className="space-y-2 border-t border-slate-200 pt-3">
                   <div className="flex flex-wrap justify-end gap-2">
                     <button

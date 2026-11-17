@@ -621,43 +621,20 @@ function CareBridgeApp() {
         if (!isMounted) return;
 
         // Map to EmergencyCase view objects
-        const formatted: EmergencyCase[] = authorizedCases.map((c) => ({
-          ...c,
-          caseId: c.caseId,
-          patientUid: c.patientUid || c.patientId || currentUser.uid,
-          status: c.status,
-          createdAt: new Date(c.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          dateStr: new Date(c.createdAt).toLocaleDateString(),
-          patientName: c.patientName,
-          patientAge: String(c.patientAge || 0),
-          patientGender: c.patientGender || 'Unknown',
-          patientBloodGroup: c.patientBloodGroup || 'Unknown',
-          patientCondition: c.conditionSummary || c.patientCondition || 'Emergency Medical Request',
-          conditionSummary: c.conditionSummary || c.patientCondition || 'Emergency Medical Request',
-          location: c.location || { address: c.incidentAddress || 'Hubballi', city: 'Hubballi' },
-          resourcesNeeded: c.resourcesNeeded || [],
-          attendantName: c.attendant?.name || currentUser.displayName || 'Sahana S.',
-          attendantRelation: c.attendant?.relation || 'Attendant',
-          attendantPhone: c.attendant?.phone || currentUser.phone || '',
-          incidentAddress: c.location?.address || c.incidentAddress || 'Hubballi',
-          triagePriority: normalizeTriagePriority(c.urgencyLevel || c.triagePriority),
-          emergencyDescription: c.conditionSummary || c.emergencyDescription || 'Emergency Medical Request',
-          providerName: 'CareBridge Emergency Network',
-          providerDetails: 'Verified Emergency Response Network',
-          providerRating: '4.9 Stars',
-          resourcesList: (c.resourcesNeeded || []).map((r) =>
-            r === 'bed'
-              ? 'Hospital Beds'
-              : r === 'icu'
-              ? 'ICU Facilities'
-              : r === 'blood'
-              ? 'Blood'
-              : r === 'oxygen'
-              ? 'Oxygen'
-              : 'Ambulance Services'
-          ),
-          individualStatuses: (c.individualStatuses && c.individualStatuses.length > 0)
-            ? c.individualStatuses
+        const formatted: EmergencyCase[] = authorizedCases.map((c) => {
+          const liveTrip = dataStore.getTripForCase(c.caseId);
+          const computedStatus = liveTrip
+            ? (liveTrip.status === 'completed'
+                ? 'COMPLETED'
+                : ['arrived', 'picked_up', 'in_transit', 'delivered'].includes(liveTrip.status)
+                  ? 'IN_PROGRESS'
+                  : ['dispatched', 'en_route'].includes(liveTrip.status)
+                    ? 'DISPATCHED'
+                    : c.status)
+            : c.status;
+
+          const baseStatuses = (c.individualStatuses && c.individualStatuses.length > 0)
+            ? [...c.individualStatuses]
             : (c.resourceRequests && c.resourceRequests.length > 0)
               ? c.resourceRequests.map((r) => ({
                   resource: r.resourceType.toUpperCase(),
@@ -669,8 +646,77 @@ function CareBridgeApp() {
                   ...(c.assignedAmbulanceName ? [{ resource: 'Ambulance', detail: `Assigned: ${c.assignedAmbulanceName}`, status: c.status }] : []),
                   ...(c.assignedBloodBankName ? [{ resource: 'Blood Bank', detail: `Assigned: ${c.assignedBloodBankName}`, status: c.status }] : []),
                   ...(c.assignedOxygenName ? [{ resource: 'Oxygen', detail: `Assigned: ${c.assignedOxygenName}`, status: c.status }] : [])
-                ]
-        }));
+                ];
+
+          if (liveTrip) {
+            const ambIdx = baseStatuses.findIndex((s) => s.resource?.toLowerCase().includes('ambulance'));
+            const tripStatusDisplayMap: Record<string, string> = {
+              dispatched: 'Dispatched',
+              en_route: 'En Route',
+              arrived: 'Arrived at Scene',
+              picked_up: 'Patient Picked Up',
+              in_transit: 'In Transit',
+              delivered: 'Delivered',
+              completed: 'Completed'
+            };
+            const liveStatusText = tripStatusDisplayMap[liveTrip.status] || liveTrip.status.replace('_', ' ');
+            const liveDetailText = `Ambulance (${liveTrip.vehicleId}) - ${liveStatusText}`;
+            if (ambIdx >= 0) {
+              baseStatuses[ambIdx] = {
+                ...baseStatuses[ambIdx],
+                status: liveStatusText as any,
+                detail: liveDetailText,
+                code: (liveTrip.status === 'completed' ? 'completed' : 'dispatched') as any
+              };
+            } else {
+              baseStatuses.push({
+                resource: 'Ambulance Services',
+                status: liveStatusText as any,
+                detail: liveDetailText,
+                code: (liveTrip.status === 'completed' ? 'completed' : 'dispatched') as any
+              });
+            }
+          }
+
+          return {
+            ...c,
+            caseId: c.caseId,
+            patientUid: c.patientUid || c.patientId || currentUser.uid,
+            status: computedStatus as any,
+            createdAt: new Date(c.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            dateStr: new Date(c.createdAt).toLocaleDateString(),
+            patientName: c.patientName,
+            patientAge: String(c.patientAge || 0),
+            patientGender: c.patientGender || 'Unknown',
+            patientBloodGroup: c.patientBloodGroup || 'Unknown',
+            patientCondition: c.conditionSummary || c.patientCondition || 'Emergency Medical Request',
+            conditionSummary: c.conditionSummary || c.patientCondition || 'Emergency Medical Request',
+            location: c.location || { address: c.incidentAddress || 'Hubballi', city: 'Hubballi' },
+            resourcesNeeded: c.resourcesNeeded || [],
+            attendantName: c.attendant?.name || currentUser.displayName || 'Sahana S.',
+            attendantRelation: c.attendant?.relation || 'Attendant',
+            attendantPhone: c.attendant?.phone || currentUser.phone || '',
+            incidentAddress: c.location?.address || c.incidentAddress || 'Hubballi',
+            triagePriority: normalizeTriagePriority(c.urgencyLevel || c.triagePriority),
+            emergencyDescription: c.conditionSummary || c.emergencyDescription || 'Emergency Medical Request',
+            providerName: 'CareBridge Emergency Network',
+            providerDetails: 'Verified Emergency Response Network',
+            providerRating: '4.9 Stars',
+            assignedAmbulanceName: c.assignedAmbulanceName || (liveTrip ? (dataStore.getAmbulanceProfile(liveTrip.providerUid)?.providerName || 'SwiftCare Emergency Ambulance') : undefined),
+            resourcesList: (c.resourcesNeeded || []).map((r) =>
+              r === 'bed'
+                ? 'Hospital Beds'
+                : r === 'icu'
+                ? 'ICU Facilities'
+                : r === 'blood'
+                ? 'Blood'
+                : r === 'oxygen'
+                ? 'Oxygen'
+                : 'Ambulance Services'
+            ),
+            individualStatuses: baseStatuses
+          };
+        });
 
         setCasesList(formatted);
 
@@ -696,43 +742,20 @@ function CareBridgeApp() {
     const unsubCases = subscribeCasesForAttendantFromFirestore(currentUser.uid, [], (cases) => {
       if (!isMounted) return;
       if (cases.length > 0) {
-        const formatted: EmergencyCase[] = cases.map((c) => ({
-          ...c,
-          caseId: c.caseId,
-          patientUid: c.patientUid || c.patientId || currentUser.uid,
-          status: c.status,
-          createdAt: new Date(c.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          dateStr: new Date(c.createdAt).toLocaleDateString(),
-          patientName: c.patientName,
-          patientAge: String(c.patientAge || 0),
-          patientGender: c.patientGender || 'Unknown',
-          patientBloodGroup: c.patientBloodGroup || 'Unknown',
-          patientCondition: c.conditionSummary || c.patientCondition || 'Emergency Medical Request',
-          conditionSummary: c.conditionSummary || c.patientCondition || 'Emergency Medical Request',
-          location: c.location || { address: c.incidentAddress || 'Hubballi', city: 'Hubballi' },
-          resourcesNeeded: c.resourcesNeeded || [],
-          attendantName: c.attendant?.name || currentUser.displayName || 'Sahana S.',
-          attendantRelation: c.attendant?.relation || 'Attendant',
-          attendantPhone: c.attendant?.phone || currentUser.phone || '',
-          incidentAddress: c.location?.address || c.incidentAddress || 'Hubballi',
-          triagePriority: normalizeTriagePriority(c.urgencyLevel || c.triagePriority),
-          emergencyDescription: c.conditionSummary || c.emergencyDescription || 'Emergency Medical Request',
-          providerName: 'CareBridge Emergency Network',
-          providerDetails: 'Verified Emergency Response Network',
-          providerRating: '4.9 Stars',
-          resourcesList: (c.resourcesNeeded || []).map((r) =>
-            r === 'bed'
-              ? 'Hospital Beds'
-              : r === 'icu'
-              ? 'ICU Facilities'
-              : r === 'blood'
-              ? 'Blood'
-              : r === 'oxygen'
-              ? 'Oxygen'
-              : 'Ambulance Services'
-          ),
-          individualStatuses: (c.individualStatuses && c.individualStatuses.length > 0)
-            ? c.individualStatuses
+        const formatted: EmergencyCase[] = cases.map((c) => {
+          const liveTrip = dataStore.getTripForCase(c.caseId);
+          const computedStatus = liveTrip
+            ? (liveTrip.status === 'completed'
+                ? 'COMPLETED'
+                : ['arrived', 'picked_up', 'in_transit', 'delivered'].includes(liveTrip.status)
+                  ? 'IN_PROGRESS'
+                  : ['dispatched', 'en_route'].includes(liveTrip.status)
+                    ? 'DISPATCHED'
+                    : c.status)
+            : c.status;
+
+          const baseStatuses = (c.individualStatuses && c.individualStatuses.length > 0)
+            ? [...c.individualStatuses]
             : (c.resourceRequests && c.resourceRequests.length > 0)
               ? c.resourceRequests.map((r) => ({
                   resource: r.resourceType.toUpperCase(),
@@ -744,8 +767,77 @@ function CareBridgeApp() {
                   ...(c.assignedAmbulanceName ? [{ resource: 'Ambulance', detail: `Assigned: ${c.assignedAmbulanceName}`, status: c.status }] : []),
                   ...(c.assignedBloodBankName ? [{ resource: 'Blood Bank', detail: `Assigned: ${c.assignedBloodBankName}`, status: c.status }] : []),
                   ...(c.assignedOxygenName ? [{ resource: 'Oxygen', detail: `Assigned: ${c.assignedOxygenName}`, status: c.status }] : [])
-                ]
-        }));
+                ];
+
+          if (liveTrip) {
+            const ambIdx = baseStatuses.findIndex((s) => s.resource?.toLowerCase().includes('ambulance'));
+            const tripStatusDisplayMap: Record<string, string> = {
+              dispatched: 'Dispatched',
+              en_route: 'En Route',
+              arrived: 'Arrived at Scene',
+              picked_up: 'Patient Picked Up',
+              in_transit: 'In Transit',
+              delivered: 'Delivered',
+              completed: 'Completed'
+            };
+            const liveStatusText = tripStatusDisplayMap[liveTrip.status] || liveTrip.status.replace('_', ' ');
+            const liveDetailText = `Ambulance (${liveTrip.vehicleId}) - ${liveStatusText}`;
+            if (ambIdx >= 0) {
+              baseStatuses[ambIdx] = {
+                ...baseStatuses[ambIdx],
+                status: liveStatusText as any,
+                detail: liveDetailText,
+                code: (liveTrip.status === 'completed' ? 'completed' : 'dispatched') as any
+              };
+            } else {
+              baseStatuses.push({
+                resource: 'Ambulance Services',
+                status: liveStatusText as any,
+                detail: liveDetailText,
+                code: (liveTrip.status === 'completed' ? 'completed' : 'dispatched') as any
+              });
+            }
+          }
+
+          return {
+            ...c,
+            caseId: c.caseId,
+            patientUid: c.patientUid || c.patientId || currentUser.uid,
+            status: computedStatus as any,
+            createdAt: new Date(c.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            dateStr: new Date(c.createdAt).toLocaleDateString(),
+            patientName: c.patientName,
+            patientAge: String(c.patientAge || 0),
+            patientGender: c.patientGender || 'Unknown',
+            patientBloodGroup: c.patientBloodGroup || 'Unknown',
+            patientCondition: c.conditionSummary || c.patientCondition || 'Emergency Medical Request',
+            conditionSummary: c.conditionSummary || c.patientCondition || 'Emergency Medical Request',
+            location: c.location || { address: c.incidentAddress || 'Hubballi', city: 'Hubballi' },
+            resourcesNeeded: c.resourcesNeeded || [],
+            attendantName: c.attendant?.name || currentUser.displayName || 'Sahana S.',
+            attendantRelation: c.attendant?.relation || 'Attendant',
+            attendantPhone: c.attendant?.phone || currentUser.phone || '',
+            incidentAddress: c.location?.address || c.incidentAddress || 'Hubballi',
+            triagePriority: normalizeTriagePriority(c.urgencyLevel || c.triagePriority),
+            emergencyDescription: c.conditionSummary || c.emergencyDescription || 'Emergency Medical Request',
+            providerName: 'CareBridge Emergency Network',
+            providerDetails: 'Verified Emergency Response Network',
+            providerRating: '4.9 Stars',
+            assignedAmbulanceName: c.assignedAmbulanceName || (liveTrip ? (dataStore.getAmbulanceProfile(liveTrip.providerUid)?.providerName || 'SwiftCare Emergency Ambulance') : undefined),
+            resourcesList: (c.resourcesNeeded || []).map((r) =>
+              r === 'bed'
+                ? 'Hospital Beds'
+                : r === 'icu'
+                ? 'ICU Facilities'
+                : r === 'blood'
+                ? 'Blood'
+                : r === 'oxygen'
+                ? 'Oxygen'
+                : 'Ambulance Services'
+            ),
+            individualStatuses: baseStatuses
+          };
+        });
         setCasesList(formatted);
       }
     });
@@ -756,6 +848,19 @@ function CareBridgeApp() {
       unsubCases();
     };
   }, [currentUser]);
+
+  // Synchronize open dashboard case modal with live casesList updates
+  useEffect(() => {
+    if (!selectedDashboardCase) return;
+    const updated = casesList.find((c) => c.caseId === selectedDashboardCase.caseId);
+    if (updated && (
+      updated.status !== selectedDashboardCase.status ||
+      (updated as any).updatedAt !== (selectedDashboardCase as any).updatedAt ||
+      JSON.stringify(updated.individualStatuses) !== JSON.stringify(selectedDashboardCase.individualStatuses)
+    )) {
+      setSelectedDashboardCase(updated);
+    }
+  }, [casesList, selectedDashboardCase]);
 
   const [copiedCaseId, setCopiedCaseId] = useState(false);
   const [isViewCaseModalOpen, setIsViewCaseModalOpen] = useState(false);
@@ -5206,10 +5311,76 @@ function CareBridgeApp() {
   );
 }
 
+interface ErrorBoundaryProps {
+  children: React.ReactNode;
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error: Error | null;
+}
+
+class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  constructor(props: ErrorBoundaryProps) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    console.error('[CareBridge] Unhandled UI Error caught by boundary:', error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6 text-center font-sans">
+          <div className="bg-white p-8 rounded-2xl shadow-xl max-w-md w-full border border-slate-200">
+            <div className="h-12 w-12 rounded-full bg-red-100 text-red-600 flex items-center justify-center mx-auto mb-4 font-bold text-xl">
+              !
+            </div>
+            <h2 className="text-lg font-bold text-slate-900 mb-2">Display Recovery</h2>
+            <p className="text-xs text-slate-500 mb-5 leading-relaxed">
+              {this.state.error?.message || 'An unexpected rendering error occurred. You can reload or reset your browser state.'}
+            </p>
+            <div className="flex gap-2 justify-center">
+              <button
+                type="button"
+                onClick={() => window.location.reload()}
+                className="px-4 py-2 bg-[#00707E] text-white text-xs font-bold rounded-xl shadow-xs hover:bg-[#005B66] transition-colors"
+              >
+                Reload
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  try {
+                    localStorage.clear();
+                  } catch (e) {}
+                  window.location.reload();
+                }}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl border border-slate-300 transition-colors"
+              >
+                Clear Cache & Reload
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export default function App() {
   return (
-    <AuthProvider>
-      <CareBridgeApp />
-    </AuthProvider>
+    <ErrorBoundary>
+      <AuthProvider>
+        <CareBridgeApp />
+      </AuthProvider>
+    </ErrorBoundary>
   );
 }

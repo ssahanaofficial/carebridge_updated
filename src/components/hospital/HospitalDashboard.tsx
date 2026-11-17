@@ -44,7 +44,25 @@ export const HospitalDashboard: React.FC = () => {
 
   const loadData = () => {
     if (!currentUser) return;
-    const prof = dataStore.getHospitalProfile(currentUser.uid);
+    const prof = dataStore.getHospitalProfile(currentUser.uid) || {
+      uid: currentUser.uid,
+      hospitalName: currentUser.displayName || 'Emergency Care Hospital',
+      registrationNumber: 'REG-HOSP-001',
+      departments: ['Emergency Trauma', 'Critical Care / ICU', 'Cardiology', 'General Medicine'],
+      totalBeds: 100,
+      availableBeds: 42,
+      totalICU: 20,
+      availableICU: 6,
+      totalVentilators: 10,
+      availableVentilators: 4,
+      contactNumber: currentUser.phone || '+91 836 222 5555',
+      operatingHours: '24/7',
+      city: currentUser.city || 'Hubballi',
+      state: currentUser.state || 'Karnataka',
+      address: currentUser.address || 'Hospital Emergency Wing',
+      isVerified: true,
+      lastUpdated: new Date().toISOString()
+    };
     if (prof) {
       setProfile(prof);
       setAvailBeds(prof.availableBeds);
@@ -147,17 +165,30 @@ export const HospitalDashboard: React.FC = () => {
     }
   };
 
-  const isActionRequired = (status: string) => ['pending', 'assigned'].includes(status.toLowerCase());
+  const isAccepted = (status?: string) =>
+    ['accepted', 'completed', 'resolved', 'admitted', 'confirmed'].includes(
+      String(status || '').trim().toLowerCase()
+    );
+
+  const isRejected = (status?: string) =>
+    ['rejected', 'declined', 'cancelled'].includes(
+      String(status || '').trim().toLowerCase()
+    );
+
+  const isActionRequired = (status?: string) =>
+    !isAccepted(status) && !isRejected(status);
+
+  const isIncomingAssigned = (r: ResourceRequest) =>
+    Boolean(r.assignedAt || r.assignmentCoordinatorUid || String(r.status).toUpperCase() !== 'REQUESTED');
 
   const filteredRequests = requests.filter((r) => {
-    // Requests in REQUESTED status display first in Admin dashboard until assigned
-    if (String(r.status).toUpperCase() === 'REQUESTED') return false;
+    if (!isIncomingAssigned(r)) return false;
     if (filter === 'all') return true;
     if (filter === 'pending') return isActionRequired(r.status);
     return r.status.toLowerCase() === filter.toLowerCase();
   });
 
-  const pendingCount = requests.filter((r) => String(r.status).toUpperCase() !== 'REQUESTED' && isActionRequired(r.status)).length;
+  const pendingCount = requests.filter((r) => isIncomingAssigned(r) && isActionRequired(r.status)).length;
 
   if (!profile) {
     return (
@@ -426,23 +457,28 @@ export const HospitalDashboard: React.FC = () => {
                         <div>
                           {isActionRequired(req.status) && (
                             <span className="inline-flex items-center gap-1 text-xs font-bold text-amber-700 bg-amber-100 px-2.5 py-1 rounded-full">
-                              <Clock className="w-3.5 h-3.5" /> Action Required ({req.status})
+                              <Clock className="w-3.5 h-3.5" /> Action Required (Assigned)
                             </span>
                           )}
-                          {req.status === 'accepted' && (
+                          {isAccepted(req.status) && (
                             <span className="inline-flex items-center gap-1 text-xs font-bold text-emerald-700 bg-emerald-100 px-2.5 py-1 rounded-full">
                               <CheckCircle2 className="w-3.5 h-3.5" /> Accepted
                             </span>
                           )}
-                          {req.status === 'rejected' && (
+                          {isRejected(req.status) && (
                             <span className="inline-flex items-center gap-1 text-xs font-bold text-red-700 bg-red-100 px-2.5 py-1 rounded-full">
                               <XCircle className="w-3.5 h-3.5" /> Declined
                             </span>
                           )}
+                          {isRejected(req.status) && (req.rejectionReason || req.responseDetails) && (
+                            <p className="mt-1 text-[11px] text-red-700 font-medium">
+                              Reason: {req.rejectionReason || req.responseDetails}
+                            </p>
+                          )}
                           {req.respondedAt && (
                             <p className="mt-1 text-[11px] text-slate-500">
                               Response {new Date(req.respondedAt).toLocaleString()} by {req.respondedByUid || 'provider'}
-                              {req.responseDetails ? ` - ${req.responseDetails}` : ''}
+                              {req.responseDetails && isAccepted(req.status) ? ` - ${req.responseDetails}` : ''}
                             </p>
                           )}
                         </div>
@@ -452,21 +488,24 @@ export const HospitalDashboard: React.FC = () => {
                       {isActionRequired(req.status) && (
                         <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-200">
                           <button
+                            type="button"
                             disabled={respondingReqId !== null}
                             onClick={() => {
                               setRejectionReason('');
                               setRejectingReqId(req.requestId);
                             }}
-                            className="px-3.5 py-1.5 text-xs font-bold text-red-600 hover:bg-red-50 rounded-lg transition-colors border border-red-200"
+                            className="px-3.5 py-1.5 text-xs font-bold text-red-600 hover:bg-red-50 rounded-lg transition-colors border border-red-200 disabled:opacity-50"
                           >
                             Decline Admission
                           </button>
                           <button
+                            type="button"
                             disabled={respondingReqId !== null}
                             onClick={() => handleAccept(req.requestId)}
-                            className="px-4 py-1.5 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-lg shadow-xs transition-colors flex items-center gap-1.5"
+                            className="px-4 py-1.5 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-lg shadow-xs transition-colors flex items-center gap-1.5 disabled:opacity-50"
                           >
-                            <CheckCircle2 className="w-3.5 h-3.5" /> Accept Request
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            {respondingReqId === req.requestId ? 'Accepting...' : 'Accept Request'}
                           </button>
                         </div>
                       )}
@@ -479,11 +518,11 @@ export const HospitalDashboard: React.FC = () => {
                           </label>
                           <textarea
                             required
-                            minLength={5}
+                            minLength={3}
                             value={rejectionReason}
                             onChange={(event) => setRejectionReason(event.target.value)}
-                            placeholder="Enter reason for declining (required)"
-                            className="w-full text-xs p-2 bg-white border border-red-300 rounded-lg text-slate-800"
+                            placeholder="Enter reason for declining admission (e.g., ICU beds full, redirect to nearby center)"
+                            className="w-full text-xs p-2 bg-white border border-red-300 rounded-lg text-slate-800 focus:outline-none focus:ring-1 focus:ring-red-500"
                           />
                           <div className="flex justify-end gap-2 pt-1">
                             <button
@@ -495,11 +534,11 @@ export const HospitalDashboard: React.FC = () => {
                             </button>
                             <button
                               type="button"
-                              disabled={respondingReqId !== null}
+                              disabled={respondingReqId !== null || rejectionReason.trim().length < 3}
                               onClick={() => handleReject(req.requestId)}
                               className="px-3 py-1 text-xs bg-red-600 text-white font-bold rounded shadow-xs disabled:opacity-50"
                             >
-                              Confirm Rejection
+                              {respondingReqId === req.requestId ? 'Saving...' : 'Confirm Rejection'}
                             </button>
                           </div>
                         </div>

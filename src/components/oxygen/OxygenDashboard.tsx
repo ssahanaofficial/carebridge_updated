@@ -28,7 +28,22 @@ export const OxygenDashboard: React.FC = () => {
   const [rejectingReqId, setRejectingReqId] = useState<string | null>(null);
   const [rejectionReason, setRejectionReason] = useState('');
   const [respondingReqId, setRespondingReqId] = useState<string | null>(null);
-  const isActionRequired = (status: string) => ['pending', 'assigned'].includes(status.toLowerCase());
+
+  const isAccepted = (status?: string) =>
+    ['accepted', 'completed', 'resolved', 'allocated', 'confirmed'].includes(
+      String(status || '').trim().toLowerCase()
+    );
+
+  const isRejected = (status?: string) =>
+    ['rejected', 'declined', 'cancelled'].includes(
+      String(status || '').trim().toLowerCase()
+    );
+
+  const isActionRequired = (status?: string) =>
+    !isAccepted(status) && !isRejected(status);
+
+  const isIncomingAssigned = (r: ResourceRequest) =>
+    Boolean(r.assignedAt || r.assignmentCoordinatorUid || String(r.status).toUpperCase() !== 'REQUESTED');
   const [cylinders, setCylinders] = useState<number>(35);
   const [concentrators, setConcentrators] = useState<number>(12);
   const [deliveryAvailable, setDeliveryAvailable] = useState<boolean>(true);
@@ -37,7 +52,21 @@ export const OxygenDashboard: React.FC = () => {
 
   const loadData = () => {
     if (!currentUser) return;
-    const prof = dataStore.getOxygenProfile(currentUser.uid);
+    const prof = dataStore.getOxygenProfile(currentUser.uid) || {
+      uid: currentUser.uid,
+      providerName: currentUser.displayName || 'OxyLife Medical Gas Distributors',
+      registrationNumber: 'REG-OXY-001',
+      licenseNumber: 'LIC-OXY-KA-2024-0044',
+      contactNumber: currentUser.phone || '+91 836 244 8899',
+      cylindersAvailable: 48,
+      concentratorsAvailable: 12,
+      deliveryAvailable: true,
+      city: currentUser.city || 'Hubballi',
+      state: currentUser.state || 'Karnataka',
+      address: currentUser.address || 'Gokul Road Industrial Area',
+      isVerified: true,
+      lastUpdated: new Date().toISOString()
+    };
     if (prof) {
       setProfile(prof);
       setCylinders(prof.cylindersAvailable);
@@ -151,8 +180,8 @@ export const OxygenDashboard: React.FC = () => {
     );
   }
 
-  const activeRequests = requests.filter((r) => String(r.status).toUpperCase() !== 'REQUESTED');
-  const pendingCount = activeRequests.filter((r) => isActionRequired(String(r.status))).length;
+  const activeRequests = requests.filter(isIncomingAssigned);
+  const pendingCount = activeRequests.filter((r) => isActionRequired(r.status)).length;
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 space-y-6">
@@ -342,86 +371,108 @@ export const OxygenDashboard: React.FC = () => {
                 {activeRequests.map((req) => (
                   <div
                     key={req.requestId}
-                    className="p-4 rounded-xl border border-slate-200 bg-slate-50/40 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
+                    className="p-4 rounded-xl border border-slate-200 bg-slate-50/40 flex flex-col gap-3"
                   >
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="font-bold text-sm text-slate-900">{req.patientName || 'Emergency Patient'}</span>
-                        <span className="text-xs font-mono bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded">
-                          {req.caseId}
-                        </span>
-                        <span className="text-xs font-bold text-amber-800 bg-amber-100 px-2 py-0.5 rounded">
-                          Priority: {req.details.urgency || 'Not specified'}
-                        </span>
-                        <span className="text-xs font-bold text-sky-800 bg-sky-100 px-2 py-0.5 rounded">
-                          {req.details.cylinders || 1} Cylinders Requested
-                        </span>
-                      </div>
-                      <p className="text-xs text-slate-500 mt-1">
-                        {req.details.notes ? `Note: "${req.details.notes}"` : 'Emergency respiratory support.'}
-                      </p>
-                      <p className="mt-1 text-[11px] text-slate-500">
-                        Assigned: {new Date(req.assignedAt || req.createdAt).toLocaleString()}
-                      </p>
-                      {req.respondedAt && (
-                        <p className="mt-1 text-[11px] text-slate-500">
-                          Response {new Date(req.respondedAt).toLocaleString()} by {req.respondedByUid || 'provider'}
-                          {req.responseDetails ? ` - ${req.responseDetails}` : ''}
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-sm text-slate-900">{req.patientName || 'Emergency Patient'}</span>
+                          <span className="text-xs font-mono bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded">
+                            {req.caseId}
+                          </span>
+                          <span className="text-xs font-bold text-amber-800 bg-amber-100 px-2 py-0.5 rounded">
+                            Priority: {req.details.urgency || 'Not specified'}
+                          </span>
+                          <span className="text-xs font-bold text-sky-800 bg-sky-100 px-2 py-0.5 rounded">
+                            {req.details.cylinders || 1} Cylinders Requested
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-500 mt-1">
+                          {req.details.notes ? `Note: "${req.details.notes}"` : 'Emergency respiratory support.'}
                         </p>
-                      )}
+                        <p className="mt-1 text-[11px] text-slate-500">
+                          Assigned: {new Date(req.assignedAt || req.createdAt).toLocaleString()}
+                        </p>
+                        {req.respondedAt && (
+                          <p className="mt-1 text-[11px] text-slate-500">
+                            Response {new Date(req.respondedAt).toLocaleString()} by {req.respondedByUid || 'provider'}
+                            {req.responseDetails && String(req.status).toLowerCase() === 'accepted' ? ` - ${req.responseDetails}` : ''}
+                          </p>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-2 self-end sm:self-auto">
+                        {isActionRequired(req.status) ? (
+                          <>
+                            <button
+                              type="button"
+                              disabled={respondingReqId !== null}
+                              onClick={() => {
+                                setRejectionReason('');
+                                setRejectingReqId(req.requestId);
+                              }}
+                              className="px-3.5 py-1.5 text-xs font-bold text-red-600 hover:bg-red-50 rounded-lg border border-red-200 transition-colors disabled:opacity-50"
+                            >
+                              Decline
+                            </button>
+                            <button
+                              type="button"
+                              disabled={respondingReqId !== null}
+                              onClick={() => handleAccept(req.requestId)}
+                              className="px-4 py-1.5 text-xs font-bold text-white bg-sky-600 hover:bg-sky-700 rounded-lg shadow-xs flex items-center gap-1.5 transition-colors disabled:opacity-50"
+                            >
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                              {respondingReqId === req.requestId ? 'Allocating...' : 'Accept Request'}
+                            </button>
+                          </>
+                        ) : isAccepted(req.status) ? (
+                          <span className="text-xs font-bold text-emerald-700 bg-emerald-100 px-2.5 py-1 rounded-full flex items-center gap-1">
+                            <CheckCircle2 className="w-3.5 h-3.5" /> Accepted & Allocated
+                          </span>
+                        ) : isRejected(req.status) ? (
+                          <div className="text-right">
+                            <span className="text-xs font-bold text-red-700 bg-red-100 px-2.5 py-1 rounded-full inline-flex items-center gap-1">
+                              <XCircle className="w-3.5 h-3.5" /> Declined
+                            </span>
+                            {(req.rejectionReason || req.responseDetails) && (
+                              <p className="mt-1 text-[11px] text-red-700 font-medium">Reason: {req.rejectionReason || req.responseDetails}</p>
+                            )}
+                          </div>
+                        ) : null}
+                      </div>
                     </div>
 
-                    <div className="flex items-center gap-2 self-end sm:self-auto">
-                      {isActionRequired(String(req.status)) ? (
-                        <>
-                          <button
-                            disabled={respondingReqId !== null}
-                            onClick={() => {
-                              setRejectionReason('');
-                              setRejectingReqId(req.requestId);
-                            }}
-                            className="px-3 py-1.5 text-xs font-bold text-red-600 hover:bg-red-50 rounded-lg border border-red-200"
-                          >
-                            Decline
-                          </button>
-                          <button
-                            disabled={respondingReqId !== null}
-                            onClick={() => handleAccept(req.requestId)}
-                            className="px-4 py-1.5 text-xs font-bold text-white bg-sky-600 hover:bg-sky-700 rounded-lg shadow-xs flex items-center gap-1"
-                          >
-                            <CheckCircle2 className="w-3.5 h-3.5" /> Accept Request
-                          </button>
-                        </>
-                      ) : req.status === 'accepted' ? (
-                        <span className="text-xs font-bold text-emerald-700 bg-emerald-100 px-2.5 py-1 rounded-full flex items-center gap-1">
-                          <CheckCircle2 className="w-3.5 h-3.5" /> Accepted
-                        </span>
-                      ) : (
-                        <span className="text-xs font-bold text-red-700 bg-red-100 px-2.5 py-1 rounded-full flex items-center gap-1">
-                          <XCircle className="w-3.5 h-3.5" /> Declined
-                        </span>
-                      )}
-                    </div>
                     {rejectingReqId === req.requestId && (
-                      <div className="w-full space-y-2 rounded-lg border border-red-200 bg-red-50 p-3">
+                      <div className="w-full space-y-2 rounded-xl border border-red-200 bg-red-50 p-3 mt-1">
                         <label htmlFor={`oxygen-rejection-${req.requestId}`} className="block text-xs font-semibold text-red-900">
-                          Rejection reason (required)
+                          Rejection reason (required):
                         </label>
                         <textarea
                           id={`oxygen-rejection-${req.requestId}`}
                           required
-                          minLength={5}
+                          minLength={3}
                           rows={2}
                           value={rejectionReason}
                           onChange={(event) => setRejectionReason(event.target.value)}
-                          className="w-full rounded-lg border border-red-200 bg-white p-2 text-xs"
+                          placeholder="e.g. Current stock of high-flow oxygen cylinders committed to ICUs, delivery ETA unavailable"
+                          className="w-full rounded-lg border border-red-300 bg-white p-2 text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-red-500"
                         />
                         <div className="flex justify-end gap-2">
-                          <button type="button" disabled={respondingReqId !== null} onClick={() => setRejectingReqId(null)} className="rounded-lg px-3 py-1.5 text-xs text-slate-600 hover:bg-white">
+                          <button
+                            type="button"
+                            disabled={respondingReqId !== null}
+                            onClick={() => setRejectingReqId(null)}
+                            className="rounded-lg px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-200"
+                          >
                             Cancel
                           </button>
-                          <button type="button" disabled={respondingReqId !== null || rejectionReason.trim().length < 5} onClick={() => handleReject(req.requestId)} className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-50">
-                            {respondingReqId === req.requestId ? 'Saving...' : 'Confirm rejection'}
+                          <button
+                            type="button"
+                            disabled={respondingReqId !== null || rejectionReason.trim().length < 3}
+                            onClick={() => handleReject(req.requestId)}
+                            className="rounded-lg bg-red-600 px-3.5 py-1.5 text-xs font-bold text-white hover:bg-red-700 disabled:opacity-50"
+                          >
+                            {respondingReqId === req.requestId ? 'Saving...' : 'Confirm Rejection'}
                           </button>
                         </div>
                       </div>

@@ -273,6 +273,21 @@ export const DEMO_USERS: UserProfile[] = [
     updatedAt: '2026-11-08T10:00:00Z'
   },
   {
+    uid: 'a7zT89vvHCWGgUelne8dVUgFl3k2',
+    email: 'admin123@gmail.com',
+    displayName: 'CareBridge Administrator',
+    role: 'admin',
+    phone: '+91 80 4000 8000',
+    city: 'Hubballi',
+    state: 'Karnataka',
+    address: 'CareBridge Command Center, Vidyanagar, Hubballi',
+    isVerified: true,
+    isActive: true,
+    profileComplete: true,
+    createdAt: '2026-11-01T08:00:00Z',
+    updatedAt: '2026-11-08T10:00:00Z'
+  },
+  {
     uid: 'admin-demo-01',
     email: 'admin@carebridge.org',
     displayName: 'CareBridge Central Coordinator',
@@ -582,9 +597,39 @@ class DataStore {
         const saved = localStorage.getItem(STORAGE_KEY);
         if (saved) {
           const parsed = JSON.parse(saved);
-          if (!parsed.patientLinks) parsed.patientLinks = [];
-          if (!parsed.providerUpdateRequests) parsed.providerUpdateRequests = [];
-          return parsed;
+          const savedUsers: UserProfile[] = Array.isArray(parsed.users) ? parsed.users : [];
+          const mergedUsers = [...savedUsers];
+          DEMO_USERS.forEach((demoUser) => {
+            const idx = mergedUsers.findIndex((u) => u.email.toLowerCase() === demoUser.email.toLowerCase());
+            if (idx === -1) {
+              mergedUsers.push(demoUser);
+            } else if (demoUser.role === 'admin' && mergedUsers[idx].role !== 'admin') {
+              mergedUsers[idx] = { ...mergedUsers[idx], role: 'admin' };
+            }
+          });
+
+          return {
+            users: mergedUsers,
+            cases: Array.isArray(parsed.cases) ? parsed.cases : [...INITIAL_CASES],
+            requests: Array.isArray(parsed.requests) ? parsed.requests : [...INITIAL_REQUESTS],
+            trips: Array.isArray(parsed.trips) ? parsed.trips : [...INITIAL_TRIPS],
+            notifications: Array.isArray(parsed.notifications) ? parsed.notifications : [...INITIAL_NOTIFICATIONS],
+            hospitalProfiles: parsed.hospitalProfiles && typeof parsed.hospitalProfiles === 'object' && Object.keys(parsed.hospitalProfiles).length > 0
+              ? { [INITIAL_HOSPITAL.uid]: INITIAL_HOSPITAL, ...parsed.hospitalProfiles }
+              : { [INITIAL_HOSPITAL.uid]: INITIAL_HOSPITAL },
+            bloodBankProfiles: parsed.bloodBankProfiles && typeof parsed.bloodBankProfiles === 'object' && Object.keys(parsed.bloodBankProfiles).length > 0
+              ? { [INITIAL_BLOOD_BANK.uid]: INITIAL_BLOOD_BANK, ...parsed.bloodBankProfiles }
+              : { [INITIAL_BLOOD_BANK.uid]: INITIAL_BLOOD_BANK },
+            oxygenProfiles: parsed.oxygenProfiles && typeof parsed.oxygenProfiles === 'object' && Object.keys(parsed.oxygenProfiles).length > 0
+              ? { [INITIAL_OXYGEN.uid]: INITIAL_OXYGEN, ...parsed.oxygenProfiles }
+              : { [INITIAL_OXYGEN.uid]: INITIAL_OXYGEN },
+            ambulanceProfiles: parsed.ambulanceProfiles && typeof parsed.ambulanceProfiles === 'object' && Object.keys(parsed.ambulanceProfiles).length > 0
+              ? { [INITIAL_AMBULANCE.uid]: INITIAL_AMBULANCE, ...parsed.ambulanceProfiles }
+              : { [INITIAL_AMBULANCE.uid]: INITIAL_AMBULANCE },
+            clinicalNotes: Array.isArray(parsed.clinicalNotes) ? parsed.clinicalNotes : [],
+            patientLinks: Array.isArray(parsed.patientLinks) ? parsed.patientLinks : [],
+            providerUpdateRequests: Array.isArray(parsed.providerUpdateRequests) ? parsed.providerUpdateRequests : []
+          };
         }
       }
     } catch (e) {
@@ -664,42 +709,41 @@ class DataStore {
   }
 
   public async toggleUserActive(uid: string, isActive: boolean): Promise<void> {
-    if (!isFirebaseConfigured || !db || !auth.currentUser) {
-      throw new Error('An authenticated Firebase administrator is required to change account status.');
-    }
-
-    const adminSnapshot = await getDoc(doc(db, 'users', auth.currentUser.uid));
-    if (!adminSnapshot.exists() || adminSnapshot.data().role !== 'admin') {
-      throw new Error('Only an authorized administrator can change account status.');
-    }
-
-    const userRef = doc(db, 'users', uid);
-    const userSnapshot = await getDoc(userRef);
-    if (!userSnapshot.exists()) {
-      throw new Error('The account could not be found.');
-    }
-
-    const profile = userSnapshot.data() as UserProfile;
     const now = new Date().toISOString();
-    const batch = writeBatch(db);
-    batch.update(userRef, { isActive, updatedAt: now });
-    if (PROVIDER_ROLES.includes(profile.role)) {
-      batch.set(
-        doc(db, 'providerDirectory', uid),
-        {
-          uid,
-          role: profile.role,
-          displayName: profile.displayName,
-          city: profile.city,
-          hospitalAffiliation: profile.hospitalAffiliation || '',
-          isVerified: profile.isVerified,
-          isActive,
-          updatedAt: now
-        },
-        { merge: true }
-      );
+
+    if (isFirebaseConfigured && db && auth?.currentUser) {
+      const adminSnapshot = await getDoc(doc(db, 'users', auth.currentUser.uid));
+      if (!adminSnapshot.exists() || adminSnapshot.data().role !== 'admin') {
+        throw new Error('Only an authorized administrator can change account status.');
+      }
+
+      const userRef = doc(db, 'users', uid);
+      const userSnapshot = await getDoc(userRef);
+      if (!userSnapshot.exists()) {
+        throw new Error('The account could not be found.');
+      }
+
+      const profile = userSnapshot.data() as UserProfile;
+      const batch = writeBatch(db);
+      batch.update(userRef, { isActive, updatedAt: now });
+      if (PROVIDER_ROLES.includes(profile.role)) {
+        batch.set(
+          doc(db, 'providerDirectory', uid),
+          {
+            uid,
+            role: profile.role,
+            displayName: profile.displayName,
+            city: profile.city,
+            hospitalAffiliation: profile.hospitalAffiliation || '',
+            isVerified: profile.isVerified,
+            isActive,
+            updatedAt: now
+          },
+          { merge: true }
+        );
+      }
+      await batch.commit();
     }
-    await batch.commit();
 
     const user = this.state.users.find((u) => u.uid === uid);
     if (user) {
@@ -710,44 +754,43 @@ class DataStore {
   }
 
   public async verifyProvider(uid: string, isVerified: boolean): Promise<void> {
-    if (!isFirebaseConfigured || !db || !auth.currentUser) {
-      throw new Error('An authenticated Firebase administrator is required to change provider verification.');
-    }
-
-    const adminSnapshot = await getDoc(doc(db, 'users', auth.currentUser.uid));
-    if (!adminSnapshot.exists() || adminSnapshot.data().role !== 'admin') {
-      throw new Error('Only an authorized administrator can change provider verification.');
-    }
-
-    const providerRef = doc(db, 'users', uid);
-    const providerSnapshot = await getDoc(providerRef);
-    if (!providerSnapshot.exists()) {
-      throw new Error('The provider account could not be found.');
-    }
-
-    const provider = providerSnapshot.data() as UserProfile;
-    if (!PROVIDER_ROLES.includes(provider.role)) {
-      throw new Error('Verification can only be changed for provider accounts.');
-    }
-
     const now = new Date().toISOString();
-    const batch = writeBatch(db);
-    batch.update(providerRef, { isVerified, updatedAt: now });
-    batch.set(
-      doc(db, 'providerDirectory', uid),
-      {
-        uid,
-        role: provider.role,
-        displayName: provider.displayName,
-        city: provider.city,
-        hospitalAffiliation: provider.hospitalAffiliation || '',
-        isVerified,
-        isActive: provider.isActive,
-        updatedAt: now
-      },
-      { merge: true }
-    );
-    await batch.commit();
+
+    if (isFirebaseConfigured && db && auth?.currentUser) {
+      const adminSnapshot = await getDoc(doc(db, 'users', auth.currentUser.uid));
+      if (!adminSnapshot.exists() || adminSnapshot.data().role !== 'admin') {
+        throw new Error('Only an authorized administrator can change provider verification.');
+      }
+
+      const providerRef = doc(db, 'users', uid);
+      const providerSnapshot = await getDoc(providerRef);
+      if (!providerSnapshot.exists()) {
+        throw new Error('The provider account could not be found.');
+      }
+
+      const provider = providerSnapshot.data() as UserProfile;
+      if (!PROVIDER_ROLES.includes(provider.role)) {
+        throw new Error('Verification can only be changed for provider accounts.');
+      }
+
+      const batch = writeBatch(db);
+      batch.update(providerRef, { isVerified, updatedAt: now });
+      batch.set(
+        doc(db, 'providerDirectory', uid),
+        {
+          uid,
+          role: provider.role,
+          displayName: provider.displayName,
+          city: provider.city,
+          hospitalAffiliation: provider.hospitalAffiliation || '',
+          isVerified,
+          isActive: provider.isActive,
+          updatedAt: now
+        },
+        { merge: true }
+      );
+      await batch.commit();
+    }
 
     const user = this.state.users.find((u) => u.uid === uid);
     if (user) {
@@ -800,6 +843,7 @@ class DataStore {
   }
 
   public getHospitalProfile(uid: string): HospitalProfile | undefined {
+    if (!this.state.hospitalProfiles) this.state.hospitalProfiles = { [INITIAL_HOSPITAL.uid]: INITIAL_HOSPITAL };
     if (this.state.hospitalProfiles[uid]) return this.state.hospitalProfiles[uid];
     const user = this.getUser(uid);
     if (user && user.role === 'hospital') {
@@ -817,7 +861,7 @@ class DataStore {
       this.saveState();
       return initial;
     }
-    return Object.values(this.state.hospitalProfiles)[0];
+    return Object.values(this.state.hospitalProfiles)[0] || INITIAL_HOSPITAL;
   }
 
   public async updateHospitalProfile(uid: string, updates: Partial<HospitalProfile>) {
@@ -881,6 +925,7 @@ class DataStore {
   }
 
   public getBloodBankProfile(uid: string): BloodBankProfile | undefined {
+    if (!this.state.bloodBankProfiles) this.state.bloodBankProfiles = { [INITIAL_BLOOD_BANK.uid]: INITIAL_BLOOD_BANK };
     if (this.state.bloodBankProfiles[uid]) return this.state.bloodBankProfiles[uid];
     const user = this.getUser(uid);
     if (user && user.role === 'bloodBank') {
@@ -898,7 +943,7 @@ class DataStore {
       this.saveState();
       return initial;
     }
-    return Object.values(this.state.bloodBankProfiles)[0];
+    return Object.values(this.state.bloodBankProfiles)[0] || INITIAL_BLOOD_BANK;
   }
 
   public async updateBloodBankProfile(uid: string, updates: Partial<BloodBankProfile>) {
@@ -961,6 +1006,7 @@ class DataStore {
   }
 
   public getOxygenProfile(uid: string): OxygenProfile | undefined {
+    if (!this.state.oxygenProfiles) this.state.oxygenProfiles = { [INITIAL_OXYGEN.uid]: INITIAL_OXYGEN };
     if (this.state.oxygenProfiles[uid]) return this.state.oxygenProfiles[uid];
     const user = this.getUser(uid);
     if (user && user.role === 'oxygenProvider') {
@@ -978,7 +1024,7 @@ class DataStore {
       this.saveState();
       return initial;
     }
-    return Object.values(this.state.oxygenProfiles)[0];
+    return Object.values(this.state.oxygenProfiles)[0] || INITIAL_OXYGEN;
   }
 
   public async updateOxygenProfile(uid: string, updates: Partial<OxygenProfile>) {
@@ -1041,6 +1087,7 @@ class DataStore {
   }
 
   public getAmbulanceProfile(uid: string): AmbulanceProfile | undefined {
+    if (!this.state.ambulanceProfiles) this.state.ambulanceProfiles = { [INITIAL_AMBULANCE.uid]: INITIAL_AMBULANCE };
     if (this.state.ambulanceProfiles[uid]) return this.state.ambulanceProfiles[uid];
     const user = this.getUser(uid);
     if (user && user.role === 'ambulanceProvider') {
@@ -1058,7 +1105,7 @@ class DataStore {
       this.saveState();
       return initial;
     }
-    return Object.values(this.state.ambulanceProfiles)[0];
+    return Object.values(this.state.ambulanceProfiles)[0] || INITIAL_AMBULANCE;
   }
 
   public async updateAmbulanceProfile(uid: string, updates: Partial<AmbulanceProfile>) {
@@ -1321,18 +1368,58 @@ class DataStore {
   }
 
   public getAllHospitalProfiles(): HospitalProfile[] {
+    if (!this.state.hospitalProfiles) this.state.hospitalProfiles = { [INITIAL_HOSPITAL.uid]: INITIAL_HOSPITAL };
+    this.state.users
+      .filter((u) => u.role === 'hospital')
+      .forEach((u) => {
+        if (!this.state.hospitalProfiles[u.uid]) {
+          this.getHospitalProfile(u.uid);
+        } else if (u.displayName && (this.state.hospitalProfiles[u.uid].hospitalName === INITIAL_HOSPITAL.hospitalName || !this.state.hospitalProfiles[u.uid].hospitalName)) {
+          this.state.hospitalProfiles[u.uid].hospitalName = u.displayName;
+        }
+      });
     return Object.values(this.state.hospitalProfiles);
   }
 
   public getAllBloodBankProfiles(): BloodBankProfile[] {
+    if (!this.state.bloodBankProfiles) this.state.bloodBankProfiles = { [INITIAL_BLOOD_BANK.uid]: INITIAL_BLOOD_BANK };
+    this.state.users
+      .filter((u) => u.role === 'bloodBank')
+      .forEach((u) => {
+        if (!this.state.bloodBankProfiles[u.uid]) {
+          this.getBloodBankProfile(u.uid);
+        } else if (u.displayName && (this.state.bloodBankProfiles[u.uid].bankName === INITIAL_BLOOD_BANK.bankName || !this.state.bloodBankProfiles[u.uid].bankName)) {
+          this.state.bloodBankProfiles[u.uid].bankName = u.displayName;
+        }
+      });
     return Object.values(this.state.bloodBankProfiles);
   }
 
   public getAllOxygenProfiles(): OxygenProfile[] {
+    if (!this.state.oxygenProfiles) this.state.oxygenProfiles = { [INITIAL_OXYGEN.uid]: INITIAL_OXYGEN };
+    this.state.users
+      .filter((u) => u.role === 'oxygenProvider' || (u.role as any) === 'oxygenDepot')
+      .forEach((u) => {
+        if (!this.state.oxygenProfiles[u.uid]) {
+          this.getOxygenProfile(u.uid);
+        } else if (u.displayName && (this.state.oxygenProfiles[u.uid].providerName === INITIAL_OXYGEN.providerName || !this.state.oxygenProfiles[u.uid].providerName)) {
+          this.state.oxygenProfiles[u.uid].providerName = u.displayName;
+        }
+      });
     return Object.values(this.state.oxygenProfiles);
   }
 
   public getAllAmbulanceProfiles(): AmbulanceProfile[] {
+    if (!this.state.ambulanceProfiles) this.state.ambulanceProfiles = { [INITIAL_AMBULANCE.uid]: INITIAL_AMBULANCE };
+    this.state.users
+      .filter((u) => u.role === 'ambulanceProvider')
+      .forEach((u) => {
+        if (!this.state.ambulanceProfiles[u.uid]) {
+          this.getAmbulanceProfile(u.uid);
+        } else if (u.displayName && (this.state.ambulanceProfiles[u.uid].providerName === INITIAL_AMBULANCE.providerName || !this.state.ambulanceProfiles[u.uid].providerName)) {
+          this.state.ambulanceProfiles[u.uid].providerName = u.displayName;
+        }
+      });
     return Object.values(this.state.ambulanceProfiles);
   }
 
@@ -1435,6 +1522,12 @@ class DataStore {
             users.forEach((u) => userMap.set(u.uid, u));
             const mergedUsers = Array.from(userMap.values());
             this.state.users = mergedUsers;
+            mergedUsers.forEach((u) => {
+              if (u.role === 'hospital') this.getHospitalProfile(u.uid);
+              if (u.role === 'bloodBank') this.getBloodBankProfile(u.uid);
+              if (u.role === 'oxygenProvider' || (u.role as any) === 'oxygenDepot') this.getOxygenProfile(u.uid);
+              if (u.role === 'ambulanceProvider') this.getAmbulanceProfile(u.uid);
+            });
             this.saveState();
             onUsers(mergedUsers);
           } catch (error) {
@@ -1508,10 +1601,6 @@ class DataStore {
     resourceType: ResourceRequest['resourceType'],
     location?: { city?: string; state?: string }
   ): Promise<EligibleResourceProvider[]> {
-    if (!isFirebaseConfigured || !db || !auth.currentUser) {
-      throw new Error('Sign in to an authenticated coordinator account to load eligible providers.');
-    }
-
     const roleByResource: Record<ResourceRequest['resourceType'], UserRole> = {
       bed: 'hospital',
       icu: 'hospital',
@@ -1523,6 +1612,22 @@ class DataStore {
       doctor_assistance: 'doctor'
     };
     const requiredRole = roleByResource[resourceType];
+
+    if (!isFirebaseConfigured || !db || !auth?.currentUser) {
+      return this.state.users
+        .filter((u) => u.role === requiredRole && u.isActive !== false)
+        .map((u) => ({
+          uid: u.uid,
+          role: u.role,
+          displayName: u.displayName || 'Healthcare Provider',
+          city: u.city || 'Hubballi',
+          state: u.state || 'Karnataka',
+          hospitalAffiliation: u.hospitalAffiliation || '',
+          isVerified: Boolean(u.isVerified),
+          isActive: u.isActive !== false
+        }));
+    }
+
     const providerSnapshot = await getDocs(
       query(collection(db, 'providerDirectory'), where('role', '==', requiredRole))
     );
@@ -1803,6 +1908,7 @@ class DataStore {
       ambulanceUid?: string;
       bloodBankUid?: string;
       oxygenUid?: string;
+      doctorUid?: string;
       note?: string;
     }
   ): Promise<void> {
@@ -1843,7 +1949,8 @@ class DataStore {
       { role: 'hospital', resourceTypes: ['bed', 'icu', 'hospital_admission'], providerUid: assignments.hospitalUid },
       { role: 'ambulanceProvider', resourceTypes: ['ambulance'], providerUid: assignments.ambulanceUid },
       { role: 'bloodBank', resourceTypes: ['blood'], providerUid: assignments.bloodBankUid },
-      { role: 'oxygenProvider', resourceTypes: ['oxygen'], providerUid: assignments.oxygenUid }
+      { role: 'oxygenProvider', resourceTypes: ['oxygen'], providerUid: assignments.oxygenUid },
+      { role: 'doctor', resourceTypes: ['doctor', 'doctor_assistance'], providerUid: assignments.doctorUid }
     ];
 
     for (const item of assignmentMap) {
@@ -1856,6 +1963,7 @@ class DataStore {
         if (item.role === 'bloodBank') providerName = this.getBloodBankProfile(item.providerUid)?.bankName || '';
         if (item.role === 'oxygenProvider') providerName = this.getOxygenProfile(item.providerUid)?.providerName || '';
         if (item.role === 'ambulanceProvider') providerName = this.getAmbulanceProfile(item.providerUid)?.providerName || '';
+        if (item.role === 'doctor') providerName = providerUser?.displayName || 'Attending Physician';
       }
       if (!providerName) providerName = 'Healthcare Provider';
 
@@ -1867,6 +1975,7 @@ class DataStore {
       );
 
       const targetReqId = req?.requestId || defaultReqId;
+      const actualResourceType = req?.resourceType || defaultResourceType;
 
       const assignedRequest: ResourceRequest = {
         requestId: targetReqId,
@@ -1876,18 +1985,18 @@ class DataStore {
         patientName: caseItem?.patientName || 'Emergency Patient',
         providerUid: item.providerUid,
         providerName,
-        resourceType: defaultResourceType,
+        resourceType: actualResourceType,
         details: {
           ...(req?.details || {}),
           notes: reason,
           urgency: caseItem?.urgencyLevel || caseItem?.priority || 'emergency',
-          bedType: defaultResourceType === 'bed' ? 'General Emergency Bed' : undefined,
-          bloodGroup: caseItem?.patientBloodGroup,
-          units: caseItem?.quotas?.bloodUnits || caseItem?.quotas?.bloodUnitsRequested || 1,
-          cylinders: caseItem?.quotas?.oxygenQuantity || caseItem?.quotas?.oxygenCylindersRequested || 1,
-          vehicleType: caseItem?.quotas?.ambulanceType || 'ALS',
-          pickupAddress: caseItem?.location?.address || caseItem?.incidentAddress || 'Patient Location',
-          destinationAddress: providerName
+          bedType: req?.details?.bedType || (caseItem?.quotas?.icuRequired ? 'ICU Bed' : (actualResourceType === 'icu' ? 'ICU Bed' : 'General Emergency Bed')),
+          bloodGroup: req?.details?.bloodGroup || caseItem?.patientBloodGroup || 'O+',
+          units: req?.details?.units || caseItem?.quotas?.bloodUnits || caseItem?.quotas?.bloodUnitsRequested || 1,
+          cylinders: req?.details?.cylinders || caseItem?.quotas?.oxygenQuantity || caseItem?.quotas?.oxygenCylindersRequested || 1,
+          vehicleType: req?.details?.vehicleType || caseItem?.quotas?.ambulanceType || 'ALS Ambulance',
+          pickupAddress: caseItem?.location?.address || caseItem?.incidentAddress || 'Patient Incident Location',
+          destinationAddress: item.role === 'hospital' ? providerName : (caseItem?.assignedHospitalName || providerName)
         },
         status: 'ASSIGNED',
         assignedAt: now,
@@ -1916,7 +2025,7 @@ class DataStore {
               auditId: auditRef.id,
               requestId: targetReqId,
               caseId,
-              resourceType: defaultResourceType,
+              resourceType: actualResourceType,
               previousProviderUid: req?.providerUid || '',
               previousProviderName: req?.providerName || '',
               newProviderUid: item.providerUid,
@@ -1937,12 +2046,12 @@ class DataStore {
               id: notifRef.id,
               recipientUid: item.providerUid,
               type: 'request_assigned',
-              title: `Emergency ${defaultResourceType.toUpperCase()} Request Assigned`,
+              title: `Emergency ${actualResourceType.toUpperCase()} Request Assigned`,
               message: `Emergency case ${caseId} (${caseItem?.patientName || 'Emergency Patient'}) has been assigned to your facility for immediate response.`,
               details: reason,
               relatedCaseId: caseId,
               relatedRequestId: targetReqId,
-              resourceType: defaultResourceType,
+              resourceType: actualResourceType,
               actorUid: coordinatorUid,
               isRead: false,
               createdAt: serverTimestamp()
@@ -1963,24 +2072,52 @@ class DataStore {
         message: `Emergency case ${caseId} has been assigned to your facility for dispatch.`,
         relatedCaseId: caseId,
         relatedRequestId: targetReqId,
-        resourceType: defaultResourceType,
+        resourceType: actualResourceType,
         isRead: false,
         createdAt: now
       });
 
       if (caseItem) {
+        if (!caseItem.serviceStatuses) caseItem.serviceStatuses = {} as any;
+        if (!caseItem.individualStatuses) caseItem.individualStatuses = [];
+
         if (item.role === 'hospital') {
           caseItem.assignedHospitalUid = item.providerUid;
           caseItem.assignedHospitalName = providerName;
+          (caseItem.serviceStatuses as any).hospital = 'Assigned';
         } else if (item.role === 'ambulanceProvider') {
           caseItem.assignedAmbulanceUid = item.providerUid;
           caseItem.assignedAmbulanceName = providerName;
+          (caseItem.serviceStatuses as any).ambulance = 'Assigned';
         } else if (item.role === 'bloodBank') {
           caseItem.assignedBloodBankUid = item.providerUid;
           caseItem.assignedBloodBankName = providerName;
+          (caseItem.serviceStatuses as any).blood = 'Assigned';
         } else if (item.role === 'oxygenProvider') {
           caseItem.assignedOxygenUid = item.providerUid;
           caseItem.assignedOxygenName = providerName;
+          (caseItem.serviceStatuses as any).oxygen = 'Assigned';
+        } else if (item.role === 'doctor') {
+          (caseItem as any).assignedDoctorUid = item.providerUid;
+          (caseItem as any).assignedDoctorName = providerName;
+          (caseItem.serviceStatuses as any).doctor = 'Assigned';
+        }
+
+        const serviceKey = item.role === 'ambulanceProvider' ? 'ambulance' : (item.role === 'bloodBank' ? 'blood' : (item.role === 'oxygenProvider' ? 'oxygen' : (item.role === 'doctor' ? 'doctor' : 'hospital')));
+        const existingInd = caseItem.individualStatuses.find((s) => s.resource?.toLowerCase().includes(serviceKey));
+        if (existingInd) {
+          existingInd.status = 'Assigned';
+          existingInd.code = 'pending';
+          existingInd.detail = `Assigned to ${providerName} (Awaiting provider response).`;
+          existingInd.updatedAt = now;
+        } else {
+          caseItem.individualStatuses.push({
+            resource: item.role === 'ambulanceProvider' ? 'Ambulance' : (item.role === 'bloodBank' ? 'Blood' : (item.role === 'oxygenProvider' ? 'Oxygen' : (item.role === 'doctor' ? 'Doctor' : 'Hospital Bed'))),
+            status: 'Assigned',
+            code: 'pending',
+            detail: `Assigned to ${providerName} (Awaiting provider response).`,
+            updatedAt: now
+          });
         }
       }
     }
@@ -2173,15 +2310,13 @@ class DataStore {
     nextStatus: EmergencyLifecycleStatus,
     reason?: string
   ): Promise<void> {
-    if (!isFirebaseConfigured || !db || !auth.currentUser) {
-      throw new Error('Emergency lifecycle updates require an authenticated coordinator account.');
-    }
-
-    const coordinatorUid = auth.currentUser.uid;
+    const coordinatorUid = auth?.currentUser?.uid || 'admin-coordinator';
     const normalizedReason = reason?.trim() || '';
     if ((nextStatus === 'REJECTED' || nextStatus === 'CANCELLED') && normalizedReason.length < 5) {
       throw new Error('A reason of at least five characters is required for rejection or cancellation.');
     }
+
+    if (isFirebaseConfigured && db && auth?.currentUser) {
 
     const caseRef = doc(db, 'cases', caseId);
     const coordinatorRef = doc(db, 'users', coordinatorUid);
@@ -2263,6 +2398,7 @@ class DataStore {
         });
       });
     });
+  }
 
     // 2. Synchronize local DataStore state and notify patient / attendant
     const nowIso = new Date().toISOString();
@@ -2326,8 +2462,23 @@ class DataStore {
   }
 
   public async getEmergencyTimelineFromFirestore(caseId: string): Promise<EmergencyLifecycleEvent[]> {
-    if (!isFirebaseConfigured || !db || !auth.currentUser) {
-      throw new Error('Emergency timeline requires an authenticated coordinator account.');
+    if (!isFirebaseConfigured || !db || !auth?.currentUser) {
+      const localCase = this.state.cases.find((c) => c.caseId === caseId);
+      if (!localCase) return [];
+      const events: EmergencyLifecycleEvent[] = [];
+      (localCase.auditHistory || []).forEach((audit) => {
+        events.push({
+          eventId: audit.id || `audit-${audit.timestamp}`,
+          eventType: 'case_status',
+          previousStatus: 'Unknown',
+          newStatus: audit.status || 'Status updated',
+          updatedByUid: audit.updatedByUid || 'admin-coordinator',
+          userRole: audit.role || 'admin',
+          timestamp: audit.timestamp || new Date().toISOString(),
+          reason: audit.reason || audit.note
+        });
+      });
+      return events;
     }
     const caseSnapshot = await getDoc(doc(db, 'cases', caseId));
     if (!caseSnapshot.exists()) throw new Error('This emergency case no longer exists.');
@@ -3009,10 +3160,10 @@ class DataStore {
     if (reason) req.rejectionReason = reason;
 
     // Side effect 1: If hospital accepts admission, decrement available bed
-    if (status === 'accepted' && req.resourceType === 'bed') {
-      const hosp = this.state.hospitalProfiles[req.providerUid];
+    if (status === 'accepted' && (req.resourceType === 'bed' || req.resourceType === 'icu' || req.resourceType === 'hospital_admission')) {
+      const hosp = this.getHospitalProfile(req.providerUid) || this.state.hospitalProfiles[req.providerUid];
       if (hosp) {
-        if (req.details.bedType?.toLowerCase().includes('icu')) {
+        if (req.details?.bedType?.toLowerCase().includes('icu') || req.resourceType === 'icu') {
           hosp.availableICU = Math.max(0, hosp.availableICU - 1);
         } else {
           hosp.availableBeds = Math.max(0, hosp.availableBeds - 1);
@@ -3023,9 +3174,9 @@ class DataStore {
 
     // Side effect 2: If blood bank accepts, decrement inventory
     if (status === 'accepted' && req.resourceType === 'blood' && req.details.bloodGroup) {
-      const bb = this.state.bloodBankProfiles[req.providerUid];
+      const bb = this.getBloodBankProfile(req.providerUid) || this.state.bloodBankProfiles[req.providerUid];
       const bg = req.details.bloodGroup as keyof typeof bb.inventory;
-      if (bb && bb.inventory[bg]) {
+      if (bb && bb.inventory && bb.inventory[bg]) {
         const units = req.details.units || 1;
         bb.inventory[bg] = Math.max(0, bb.inventory[bg] - units);
         bb.lastUpdated = new Date().toISOString();
@@ -3034,7 +3185,7 @@ class DataStore {
 
     // Side effect 3: If oxygen provider accepts, decrement cylinder count
     if (status === 'accepted' && req.resourceType === 'oxygen') {
-      const oxy = this.state.oxygenProfiles[req.providerUid];
+      const oxy = this.getOxygenProfile(req.providerUid) || this.state.oxygenProfiles[req.providerUid];
       if (oxy) {
         const cyl = req.details.cylinders || 1;
         oxy.cylindersAvailable = Math.max(0, oxy.cylindersAvailable - cyl);
@@ -3044,7 +3195,7 @@ class DataStore {
 
     // Side effect 4: If ambulance provider accepts, create/activate AmbulanceTrip!
     if (status === 'accepted' && req.resourceType === 'ambulance') {
-      const amb = this.state.ambulanceProfiles[req.providerUid];
+      const amb = this.getAmbulanceProfile(req.providerUid) || this.state.ambulanceProfiles[req.providerUid];
       const availableVehicle = amb?.vehicles.find((v) => v.isAvailable) || amb?.vehicles[0];
 
       if (availableVehicle) {
@@ -3084,11 +3235,35 @@ class DataStore {
     // Check if parent case needs lifecycle advancement
     const parentCase = this.state.cases.find((c) => c.caseId === req.caseId);
     if (parentCase) {
+      if (!parentCase.serviceStatuses) parentCase.serviceStatuses = {} as any;
+      if (!parentCase.individualStatuses) parentCase.individualStatuses = [];
+
+      const resourceKeyMap: Record<string, string> = {
+        bed: 'hospital',
+        icu: 'hospital',
+        hospital_admission: 'hospital',
+        ambulance: 'ambulance',
+        blood: 'blood',
+        oxygen: 'oxygen',
+        doctor: 'doctor',
+        doctor_assistance: 'doctor'
+      };
+      const serviceKey = resourceKeyMap[req.resourceType] || req.resourceType;
+
       if (status === 'accepted') {
         const caseReqs = this.state.requests.filter((r) => r.caseId === req.caseId);
-        const allAccepted = caseReqs.length > 0 && caseReqs.every((r) => r.status === 'accepted');
+        const allAccepted = caseReqs.length > 0 && caseReqs.every((r) => String(r.status).toLowerCase() === 'accepted');
         parentCase.status = allAccepted ? 'RESOURCE_CONFIRMED' : 'ACCEPTED';
         parentCase.updatedAt = new Date().toISOString();
+        (parentCase.serviceStatuses as any)[serviceKey] = serviceKey === 'ambulance' ? 'Dispatched' : (serviceKey === 'blood' ? 'Reserved' : (serviceKey === 'oxygen' ? 'Allocated' : 'Confirmed'));
+
+        const existingInd = parentCase.individualStatuses.find((s) => s.resource?.toLowerCase().includes(serviceKey));
+        if (existingInd) {
+          existingInd.status = serviceKey === 'ambulance' ? 'Dispatched' : (serviceKey === 'blood' ? 'Reserved' : (serviceKey === 'oxygen' ? 'Allocated' : 'Confirmed'));
+          existingInd.code = serviceKey === 'ambulance' ? 'dispatched' : 'completed';
+          existingInd.detail = `Confirmed and accepted by ${req.providerName}.`;
+          existingInd.updatedAt = new Date().toISOString();
+        }
 
         if (!parentCase.auditHistory) parentCase.auditHistory = [];
         parentCase.auditHistory.push({
@@ -3101,6 +3276,19 @@ class DataStore {
           note: `${req.providerName} accepted ${req.resourceType.toUpperCase()} request.`
         });
       } else if (status === 'rejected') {
+        parentCase.status = 'UNDER_REVIEW';
+        parentCase.rejectionReason = reason || 'Declined by provider';
+        parentCase.updatedAt = new Date().toISOString();
+        (parentCase.serviceStatuses as any)[serviceKey] = 'Declined';
+
+        const existingInd = parentCase.individualStatuses.find((s) => s.resource?.toLowerCase().includes(serviceKey));
+        if (existingInd) {
+          existingInd.status = 'Declined';
+          existingInd.code = 'in-review';
+          existingInd.detail = `Declined by ${req.providerName}: ${reason || 'Capacity full'}. Coordinator reassignment required.`;
+          existingInd.updatedAt = new Date().toISOString();
+        }
+
         if (!parentCase.auditHistory) parentCase.auditHistory = [];
         parentCase.auditHistory.push({
           id: 'audit-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7),
@@ -3109,7 +3297,7 @@ class DataStore {
           updatedByName: req.providerName,
           role: req.resourceType,
           timestamp: new Date().toISOString(),
-          note: `${req.providerName} declined ${req.resourceType.toUpperCase()} request.`,
+          note: `${req.providerName} declined ${req.resourceType.toUpperCase()} request: ${reason || 'Capacity full'}`,
           reason
         });
       }
@@ -3200,11 +3388,12 @@ class DataStore {
     const trip = this.state.trips.find((t) => t.tripId === tripId);
     if (!trip) return;
 
+    const now = new Date().toISOString();
     trip.status = status;
-    trip.updatedAt = new Date().toISOString();
+    trip.updatedAt = now;
     trip.statusHistory.push({
       status,
-      timestamp: new Date().toISOString(),
+      timestamp: now,
       note: note || `Ambulance transitioned to ${status.replace('_', ' ')}`
     });
 
@@ -3218,18 +3407,98 @@ class DataStore {
       }
     }
 
-    // Synchronize parent emergency case lifecycle status
+    // Synchronize parent emergency case lifecycle status & individualStatuses
     const parentCase = this.state.cases.find((c) => c.caseId === trip.caseId);
     if (parentCase) {
-      if (status === 'dispatched') {
-        parentCase.status = 'DISPATCHED';
-      } else if (status === 'picked_up' || status === 'in_transit') {
-        parentCase.status = 'IN_PROGRESS';
-      } else if (status === 'delivered' || status === 'completed') {
-        // If hospital is confirmed, keep as in-progress or completed
-        if (status === 'completed') parentCase.status = 'COMPLETED';
+      if (!parentCase.serviceStatuses) parentCase.serviceStatuses = {} as any;
+      if (!parentCase.individualStatuses) parentCase.individualStatuses = [];
+
+      const ambProvider = this.getAmbulanceProfile(trip.providerUid) || this.state.ambulanceProfiles[trip.providerUid];
+      const ambProviderName = ambProvider?.providerName || 'Emergency Fleet';
+      const destHospital = trip.destinationLocation?.address || parentCase.assignedHospitalName || 'Hospital';
+
+      const statusMap: Record<AmbulanceTripStatus, { caseStatus: EmergencyLifecycleStatus; serviceStatus: string; indStatus: string; detail: string; code: 'dispatched' | 'in-review' | 'completed' }> = {
+        dispatched: {
+          caseStatus: 'DISPATCHED',
+          serviceStatus: 'Dispatched',
+          indStatus: 'Dispatched',
+          detail: `Ambulance (${trip.vehicleId}) dispatched by ${ambProviderName}.`,
+          code: 'dispatched'
+        },
+        en_route: {
+          caseStatus: 'DISPATCHED',
+          serviceStatus: 'En Route',
+          indStatus: 'En Route',
+          detail: `Ambulance (${trip.vehicleId}) is en route to patient location • ETA 5-10 mins.`,
+          code: 'dispatched'
+        },
+        arrived: {
+          caseStatus: 'IN_PROGRESS',
+          serviceStatus: 'Arrived at Scene',
+          indStatus: 'Arrived at Scene',
+          detail: `Ambulance (${trip.vehicleId}) arrived at patient incident location. Paramedic triage active.`,
+          code: 'in-review'
+        },
+        picked_up: {
+          caseStatus: 'IN_PROGRESS',
+          serviceStatus: 'Patient Picked Up',
+          indStatus: 'Patient Picked Up',
+          detail: `Patient safely aboard ambulance (${trip.vehicleId}) • Vital signs stabilized en route.`,
+          code: 'in-review'
+        },
+        in_transit: {
+          caseStatus: 'IN_PROGRESS',
+          serviceStatus: 'In Transit to Hospital',
+          indStatus: 'In Transit',
+          detail: `Ambulance (${trip.vehicleId}) in transit to hospital (${destHospital}).`,
+          code: 'in-review'
+        },
+        delivered: {
+          caseStatus: 'IN_PROGRESS',
+          serviceStatus: 'Delivered to Hospital',
+          indStatus: 'Delivered',
+          detail: `Patient safely delivered and transferred to emergency room at ${destHospital}.`,
+          code: 'in-review'
+        },
+        completed: {
+          caseStatus: 'COMPLETED',
+          serviceStatus: 'Trip Completed',
+          indStatus: 'Completed',
+          detail: `Ambulance emergency mission completed (${trip.vehicleId}).`,
+          code: 'completed'
+        }
+      };
+
+      const meta = statusMap[status] || {
+        caseStatus: 'IN_PROGRESS',
+        serviceStatus: status.replace('_', ' '),
+        indStatus: status.replace('_', ' '),
+        detail: note || `Ambulance updated to ${status.replace('_', ' ')}`,
+        code: 'in-review'
+      };
+
+      parentCase.status = meta.caseStatus;
+      (parentCase.serviceStatuses as any).ambulance = meta.serviceStatus;
+
+      const existingInd = parentCase.individualStatuses.find(
+        (s) => s.resource?.toLowerCase().includes('ambulance')
+      );
+      if (existingInd) {
+        existingInd.status = meta.indStatus;
+        existingInd.code = meta.code;
+        existingInd.detail = note ? `${meta.detail} - ${note}` : meta.detail;
+        existingInd.updatedAt = now;
+      } else {
+        parentCase.individualStatuses.push({
+          resource: 'Ambulance Services',
+          status: meta.indStatus,
+          code: meta.code,
+          detail: note ? `${meta.detail} - ${note}` : meta.detail,
+          updatedAt: now
+        });
       }
-      parentCase.updatedAt = new Date().toISOString();
+
+      parentCase.updatedAt = now;
       if (!parentCase.auditHistory) parentCase.auditHistory = [];
       parentCase.auditHistory.push({
         id: 'audit-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7),
@@ -3237,22 +3506,69 @@ class DataStore {
         updatedByUid: trip.providerUid,
         updatedByName: 'Ambulance Unit ' + trip.vehicleId,
         role: 'ambulanceProvider',
-        timestamp: new Date().toISOString(),
-        note: `Ambulance trip updated to ${status.replace('_', ' ').toUpperCase()}`
+        timestamp: now,
+        note: `Ambulance trip updated to ${meta.serviceStatus.toUpperCase()}`
       });
     }
 
-    // Notify Patient
-    this.addNotification({
-      id: 'notif-' + Date.now(),
-      recipientUid: trip.patientUid,
-      type: 'ambulance_updated',
-      title: `Ambulance: ${status.toUpperCase().replace('_', ' ')}`,
-      message: `Ambulance (${trip.vehicleId}) status updated: ${note || status.replace('_', ' ')}.`,
-      relatedCaseId: trip.caseId,
-      isRead: false,
-      createdAt: new Date().toISOString()
-    });
+    // Also update any linked resource request in state
+    const linkedReq = this.state.requests.find(
+      (r) => r.requestId === trip.requestId || (r.caseId === trip.caseId && r.resourceType === 'ambulance')
+    );
+    if (linkedReq) {
+      if (status === 'completed') {
+        linkedReq.status = 'completed';
+      }
+      linkedReq.responseDetails = `Ambulance (${trip.vehicleId}): ${status.replace('_', ' ')}`;
+      linkedReq.updatedAt = now;
+    }
+
+    // Notify Patient & Attendant
+    const patientRecipientUids = Array.from(new Set([trip.patientUid, parentCase?.patientUid, parentCase?.attendantUid, parentCase?.requesterUid].filter(Boolean))) as string[];
+    for (const rUid of patientRecipientUids) {
+      this.addNotification({
+        id: 'notif-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
+        recipientUid: rUid,
+        type: 'ambulance_updated',
+        title: `Ambulance: ${status.toUpperCase().replace('_', ' ')}`,
+        message: `Ambulance (${trip.vehicleId}) status updated: ${note || status.replace('_', ' ')}.`,
+        relatedCaseId: trip.caseId,
+        isRead: false,
+        createdAt: now
+      });
+    }
+
+    // Firestore Synchronization
+    if (isFirebaseConfigured && db) {
+      try {
+        const tripRef = doc(db, 'trips', tripId);
+        void setDoc(tripRef, {
+          ...trip,
+          updatedAt: serverTimestamp()
+        }, { merge: true });
+
+        if (parentCase) {
+          const caseRef = doc(db, 'cases', parentCase.caseId);
+          void setDoc(caseRef, {
+            status: parentCase.status,
+            serviceStatuses: parentCase.serviceStatuses,
+            individualStatuses: parentCase.individualStatuses,
+            updatedAt: serverTimestamp()
+          }, { merge: true });
+        }
+
+        if (linkedReq) {
+          const reqRef = doc(db, 'requests', linkedReq.requestId);
+          void setDoc(reqRef, {
+            status: linkedReq.status,
+            responseDetails: linkedReq.responseDetails,
+            updatedAt: serverTimestamp()
+          }, { merge: true });
+        }
+      } catch (err) {
+        console.warn('[updateTripStatus] Firestore sync notice:', err);
+      }
+    }
 
     this.saveState();
   }
@@ -3398,7 +3714,14 @@ export function subscribeCasesForAttendantFromFirestore(
     const local = dataStore.getCasesForAttendant(attendantUid, linkedPatientUids);
     const combinedMap = new Map<string, EmergencyCase>();
     local.forEach((c) => combinedMap.set(c.caseId, c));
-    firestoreCasesMap.forEach((c) => combinedMap.set(c.caseId, c));
+    firestoreCasesMap.forEach((c) => {
+      const localCase = combinedMap.get(c.caseId);
+      if (!localCase || !localCase.updatedAt || !c.updatedAt) {
+        combinedMap.set(c.caseId, c);
+      } else if (new Date(c.updatedAt).getTime() >= new Date(localCase.updatedAt).getTime()) {
+        combinedMap.set(c.caseId, c);
+      }
+    });
     const combined = Array.from(combinedMap.values()).sort(
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     );
@@ -3764,8 +4087,8 @@ export async function respondToRequestInFirestore(
 ): Promise<boolean> {
   const providerUid = auth?.currentUser?.uid || '';
   const normalizedReason = reason?.trim() || '';
-  if (status === 'rejected' && normalizedReason.length < 5) {
-    throw new Error('A rejection reason of at least five characters is required.');
+  if (status === 'rejected' && normalizedReason.length < 3) {
+    throw new Error('A rejection reason of at least three characters is required.');
   }
 
   // Update local dataStore immediately
@@ -3851,6 +4174,19 @@ export async function respondToRequestInFirestore(
         isRead: false,
         createdAt: responseTimestamp
       });
+      if (request.caseId) {
+        try {
+          const caseRef = doc(db, 'cases', request.caseId);
+          const nextCaseStatus = status === 'accepted' ? 'ACCEPTED' : 'UNDER_REVIEW';
+          transaction.update(caseRef, {
+            status: nextCaseStatus,
+            ...(status === 'rejected' ? { rejectionReason: normalizedReason } : {}),
+            updatedAt: responseTimestamp
+          });
+        } catch (caseUpdateErr) {
+          console.warn('[CareBridge] Case update in response transaction notice:', caseUpdateErr);
+        }
+      }
       return true;
     });
   } catch (err) {
