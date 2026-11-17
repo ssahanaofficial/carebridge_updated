@@ -429,6 +429,51 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
               isVerified: false,
               lastUpdated: new Date().toISOString()
             });
+          } else if (params.role === 'bloodBank') {
+            await setDoc(doc(db, 'bloodBankProfiles', uid), {
+              uid,
+              bankName: params.displayName.trim(),
+              registrationNumber: 'BB-' + Date.now().toString().slice(-6),
+              inventory: { 'A+': 18, 'A-': 5, 'B+': 24, 'B-': 3, 'AB+': 9, 'AB-': 2, 'O+': 31, 'O-': 6 },
+              contactNumber: params.phone?.trim() || '+91 800 000 0000',
+              operatingHours: '24/7',
+              city: params.city?.trim() || 'Hubballi',
+              state: 'Karnataka',
+              address: 'Blood Bank Center Address',
+              isVerified: false,
+              lastUpdated: new Date().toISOString()
+            });
+          } else if (params.role === 'oxygenProvider' || (params.role as any) === 'oxygenDepot') {
+            await setDoc(doc(db, 'oxygenProfiles', uid), {
+              uid,
+              providerName: params.displayName.trim(),
+              registrationNumber: 'OXY-' + Date.now().toString().slice(-6),
+              cylindersAvailable: 35,
+              cylindersTotal: 100,
+              concentratorsAvailable: 8,
+              concentratorsTotal: 25,
+              contactNumber: params.phone?.trim() || '+91 800 000 0000',
+              city: params.city?.trim() || 'Hubballi',
+              state: 'Karnataka',
+              address: 'Oxygen Depot Address',
+              isVerified: false,
+              lastUpdated: new Date().toISOString()
+            });
+          } else if (params.role === 'ambulanceProvider') {
+            await setDoc(doc(db, 'ambulanceProfiles', uid), {
+              uid,
+              providerName: params.displayName.trim(),
+              registrationNumber: 'AMB-' + Date.now().toString().slice(-6),
+              vehicles: [
+                { vehicleId: 'KA-25-EM-' + Math.floor(1000 + Math.random() * 9000), vehicleType: 'ALS Ambulance', driverName: 'Fleet Operator', driverPhone: params.phone?.trim() || '+91 98452 11081', isAvailable: true, currentStatus: 'idle' }
+              ],
+              contactNumber: params.phone?.trim() || '+91 800 000 0000',
+              city: params.city?.trim() || 'Hubballi',
+              state: 'Karnataka',
+              address: 'Ambulance Station Address',
+              isVerified: false,
+              lastUpdated: new Date().toISOString()
+            });
           }
           await syncProviderDirectory(newProfile);
         } catch (err) {
@@ -438,6 +483,10 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       }
 
       dataStore.saveUser(newProfile);
+      if (params.role === 'hospital') dataStore.getHospitalProfile(uid);
+      if (params.role === 'bloodBank') dataStore.getBloodBankProfile(uid);
+      if (params.role === 'oxygenProvider' || (params.role as any) === 'oxygenDepot') dataStore.getOxygenProfile(uid);
+      if (params.role === 'ambulanceProvider') dataStore.getAmbulanceProfile(uid);
       setCurrentUser(newProfile);
       return { success: true };
     } catch (err: any) {

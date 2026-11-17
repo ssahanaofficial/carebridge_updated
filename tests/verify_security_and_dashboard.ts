@@ -1542,7 +1542,7 @@ async function runTests() {
     // 7. Verify patient notification received
     const patientNotifs = dataStore.getNotifications('patient-lifecycle-01');
     const hasStatusNotif = patientNotifs.some(n =>
-      n.type === 'trip_status' || (n.message && n.message.toLowerCase().includes('ambulance'))
+      (n.type as string) === 'trip_status' || (n.message && n.message.toLowerCase().includes('ambulance'))
     );
 
     if (enRouteOk && arrivedOk && pickedUpOk && inTransitOk && deliveredOk && completedOk && hasStatusNotif) {
@@ -1554,6 +1554,110 @@ async function runTests() {
     }
   } catch (err: any) {
     record('TEST-31', 'Ambulance Status Updates Propagate to Patient Dashboard', 'FAIL', err.message);
+  }
+
+  // ----------------------------------------------------
+  // TEST 32: Multi-Provider Registration & Admin Assigning Availability
+  // ----------------------------------------------------
+  try {
+    const userKrupa: UserProfile = {
+      uid: 'krupa-bb-01',
+      displayName: 'Krupa Blood Services',
+      email: 'krupa@carebridge.org',
+      role: 'bloodBank',
+      city: 'Hubballi',
+      state: 'Karnataka',
+      isActive: true,
+      isVerified: true,
+      profileComplete: true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    const userRaksha: UserProfile = {
+      uid: 'raksha-bb-02',
+      displayName: 'Raksha Lifeline Blood Centre',
+      email: 'raksha@carebridge.org',
+      role: 'bloodBank',
+      city: 'Hubballi',
+      state: 'Karnataka',
+      isActive: true,
+      isVerified: true,
+      profileComplete: true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    const userMetroHosp: UserProfile = {
+      uid: 'metro-hosp-02',
+      displayName: 'Metro Care Hospital',
+      email: 'metro@carebridge.org',
+      role: 'hospital',
+      city: 'Hubballi',
+      state: 'Karnataka',
+      isActive: true,
+      isVerified: true,
+      profileComplete: true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    const userCityAmb: UserProfile = {
+      uid: 'city-amb-02',
+      displayName: 'City Ambulance Rescue',
+      email: 'ambulance@carebridge.org',
+      role: 'ambulanceProvider',
+      city: 'Hubballi',
+      state: 'Karnataka',
+      isActive: true,
+      isVerified: true,
+      profileComplete: true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    const userPureOxy: UserProfile = {
+      uid: 'pure-oxy-02',
+      displayName: 'PureAir Gas Depot',
+      email: 'oxygen@carebridge.org',
+      role: 'oxygenProvider',
+      city: 'Hubballi',
+      state: 'Karnataka',
+      isActive: true,
+      isVerified: true,
+      profileComplete: true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    dataStore.saveUser(userKrupa);
+    dataStore.saveUser(userRaksha);
+    dataStore.saveUser(userMetroHosp);
+    dataStore.saveUser(userCityAmb);
+    dataStore.saveUser(userPureOxy);
+
+    const allBlood = dataStore.getAllBloodBankProfiles();
+    const allHosp = dataStore.getAllHospitalProfiles();
+    const allAmb = dataStore.getAllAmbulanceProfiles();
+    const allOxy = dataStore.getAllOxygenProfiles();
+
+    const krupaPresent = allBlood.some(b => b.uid === 'krupa-bb-01' && b.bankName === 'Krupa Blood Services');
+    const rakshaPresent = allBlood.some(b => b.uid === 'raksha-bb-02' && b.bankName === 'Raksha Lifeline Blood Centre');
+    const metroPresent = allHosp.some(h => h.uid === 'metro-hosp-02' && h.hospitalName === 'Metro Care Hospital');
+    const ambPresent = allAmb.some(a => a.uid === 'city-amb-02' && a.providerName === 'City Ambulance Rescue');
+    const oxyPresent = allOxy.some(o => o.uid === 'pure-oxy-02' && o.providerName === 'PureAir Gas Depot');
+
+    // Assign Krupa to a test case and verify request receives correct provider name
+    const assignCaseId = 'EMG-20261111-9999';
+    await dataStore.assignCaseProviders(assignCaseId, { bloodBankUid: 'krupa-bb-01' });
+    const krupaReq = dataStore.getRequestsForProvider('krupa-bb-01').find(r => r.caseId === assignCaseId);
+    const assignSuccess = krupaReq?.providerName === 'Krupa Blood Services' && krupaReq?.status === 'ASSIGNED';
+
+    if (krupaPresent && rakshaPresent && metroPresent && ambPresent && oxyPresent && assignSuccess) {
+      record('TEST-32', 'Multi-Provider Registration & Admin Assigning Availability', 'PASS',
+        `All registered resource providers across Hospital, Blood Bank (Krupa & Raksha), Ambulance, and Oxygen are dynamically listed in provider profiles, visible to admin assigning dropdowns, and successfully assigned with matching provider names.`);
+    } else {
+      record('TEST-32', 'Multi-Provider Registration & Admin Assigning Availability', 'FAIL',
+        `Provider resolution failed: krupaPresent=${krupaPresent}, rakshaPresent=${rakshaPresent}, metroPresent=${metroPresent}, ambPresent=${ambPresent}, oxyPresent=${oxyPresent}, assignSuccess=${assignSuccess}`);
+    }
+  } catch (err: any) {
+    record('TEST-32', 'Multi-Provider Registration & Admin Assigning Availability', 'FAIL', err.message);
   }
 
   // ----------------------------------------------------
